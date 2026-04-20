@@ -1,0 +1,468 @@
+/**
+ * Branching LLM Chat Application - Frontend JavaScript
+ */
+
+// Application State
+const state = {
+    conversations: [],
+    currentConversation: null,
+    messageTree: null,
+    activePath: [], // Array of message IDs representing the current path through the tree
+    branchIndices: {}, // Map of message ID to selected child index
+};
+
+// API Base URL
+const API_BASE = '/api';
+
+// DOM Elements
+const elements = {
+    conversationsList: document.getElementById('conversations-list'),
+    messagesContainer: document.getElementById('messages-container'),
+    messageInput: document.getElementById('message-input'),
+    sendBtn: document.getElementById('send-btn'),
+    newChatBtn: document.getElementById('new-chat-btn'),
+    settingsBtn: document.getElementById('settings-btn'),
+    settingsModal: document.getElementById('settings-modal'),
+    closeSettings: document.getElementById('close-settings'),
+    saveSettingsBtn: document.getElementById('save-settings-btn'),
+    modelSelector: document.getElementById('model-selector'),
+    chatTitle: document.getElementById('chat-title'),
+    inputContainer: document.getElementById('input-container'),
+    loadingOverlay: document.getElementById('loading-overlay'),
+    deleteChatBtn: document.getElementById('delete-chat-btn'),
+    openaiKey: document.getElementById('openai-key'),
+    anthropicKey: document.getElementById('anthropic-key'),
+    geminiKey: document.getElementById('gemini-key'),
+};
+
+// Initialize Application
+async function init() {
+    setupEventListeners();
+    await loadConversations();
+    await loadSettings();
+}
+
+// Event Listeners
+function setupEventListeners() {
+    elements.newChatBtn.addEventListener('click', createNewConversation);
+    elements.sendBtn.addEventListener('click', sendMessage);
+    elements.messageInput.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' && !e.shiftKey) {
+            e.preventDefault();
+            sendMessage();
+        }
+    });
+
+    elements.settingsBtn.addEventListener('click', openSettings);
+    elements.closeSettings.addEventListener('click', closeSettings);
+    elements.saveSettingsBtn.addEventListener('click', saveSettings);
+    elements.deleteChatBtn.addEventListener('click', deleteCurrentConversation);
+
+    // Close modal when clicking outside
+    elements.settingsModal.addEventListener('click', (e) => {
+        if (e.target === elements.settingsModal) {
+            closeSettings();
+        }
+    });
+}
+
+// API Functions
+async function apiCall(endpoint, options = {}) {
+    try {
+        const response = await fetch(`${API_BASE}${endpoint}`, {
+            headers: {
+                'Content-Type': 'application/json',
+                ...options.headers,
+            },
+            ...options,
+        });
+
+        if (!response.ok) {
+            const error = await response.json();
+            throw new Error(error.message || 'API request failed');
+        }
+
+        return await response.json();
+    } catch (error) {
+        console.error('API Error:', error);
+        throw error;
+    }
+}
+
+// Conversations
+async function loadConversations() {
+    try {
+        state.conversations = await apiCall('/conversations');
+        renderConversations();
+    } catch (error) {
+        console.error('Failed to load conversations:', error);
+    }
+}
+
+async function createNewConversation() {
+    try {
+        const conversation = await apiCall('/conversations', {
+            method: 'POST',
+            body: JSON.stringify({ title: `New Chat ${new Date().toLocaleString()}` }),
+        });
+
+        state.conversations.unshift(conversation);
+        renderConversations();
+        await selectConversation(conversation.id);
+    } catch (error) {
+        alert('Failed to create conversation: ' + error.message);
+    }
+}
+
+async function selectConversation(conversationId) {
+    try {
+        const data = await apiCall(`/conversations/${conversationId}/tree`);
+        state.currentConversation = conversationId;
+        state.messageTree = data.tree;
+        state.activePath = [];
+        state.branchIndices = {};
+
+        // Initialize the active path with the first branch at each level
+        initializeActivePath(state.messageTree);
+
+        elements.chatTitle.textContent = data.title;
+        elements.inputContainer.style.display = 'block';
+        elements.deleteChatBtn.style.display = 'block';
+
+        renderMessages();
+        renderConversations(); // Update active state
+    } catch (error) {
+        alert('Failed to load conversation: ' + error.message);
+    }
+}
+
+async function deleteCurrentConversation() {
+    if (!state.currentConversation) return;
+
+    if (!confirm('Are you sure you want to delete this conversation?')) return;
+
+    try {
+        await apiCall(`/conversations/${state.currentConversation}`, {
+            method: 'DELETE',
+        });
+
+        state.currentConversation = null;
+        state.messageTree = null;
+        state.activePath = [];
+
+        await loadConversations();
+
+        elements.messagesContainer.innerHTML = '<div class="empty-state"><p>Conversation deleted. Start a new one!</p></div>';
+        elements.inputContainer.style.display = 'none';
+        elements.deleteChatBtn.style.display = 'none';
+        elements.chatTitle.textContent = 'Select or create a conversation';
+    } catch (error) {
+        alert('Failed to delete conversation: ' + error.message);
+    }
+}
+
+function renderConversations() {
+    elements.conversationsList.innerHTML = '';
+
+    if (state.conversations.length === 0) {
+        elements.conversationsList.innerHTML = '<p style="padding: 15px; color: var(--text-muted); font-size: 14px;">No conversations yet</p>';
+        return;
+    }
+
+    state.conversations.forEach(conv => {
+        const div = document.createElement('div');
+        div.className = 'conversation-item';
+        if (conv.id === state.currentConversation) {
+            div.classList.add('active');
+        }
+
+        const title = document.createElement('h3');
+        title.textContent = conv.title;
+
+        const date = document.createElement('p');
+        date.textContent = new Date(conv.created_at).toLocaleString();
+
+        div.appendChild(title);
+        div.appendChild(date);
+
+        div.addEventListener('click', () => selectConversation(conv.id));
+
+        elements.conversationsList.appendChild(div);
+    });
+}
+
+// Message Tree Navigation
+function initializeActivePath(tree) {
+    if (!tree || tree.length === 0) return;
+
+    // Start with the first root message
+    let current = tree[0];
+
+    while (current) {
+        state.activePath.push(current.id);
+
+        // If this message has children, select the first one
+        if (current.children && current.children.length > 0) {
+            state.branchIndices[current.id] = 0;
+            current = current.children[0];
+        } else {
+            break;
+        }
+    }
+}
+
+function findMessageById(tree, messageId) {
+    for (const message of tree) {
+        if (message.id === messageId) {
+            return message;
+        }
+        if (message.children && message.children.length > 0) {
+            const found = findMessageById(message.children, messageId);
+            if (found) return found;
+        }
+    }
+    return null;
+}
+
+function getActiveLeafMessage() {
+    if (state.activePath.length === 0) return null;
+    const leafId = state.activePath[state.activePath.length - 1];
+    return findMessageById(state.messageTree, leafId);
+}
+
+function switchBranch(parentId, direction) {
+    const parent = findMessageById(state.messageTree, parentId);
+    if (!parent || !parent.children || parent.children.length <= 1) return;
+
+    const currentIndex = state.branchIndices[parentId] || 0;
+    let newIndex = currentIndex + direction;
+
+    if (newIndex < 0) newIndex = parent.children.length - 1;
+    if (newIndex >= parent.children.length) newIndex = 0;
+
+    state.branchIndices[parentId] = newIndex;
+
+    // Rebuild the active path from this point
+    rebuildActivePathFrom(parentId);
+
+    renderMessages();
+}
+
+function rebuildActivePathFrom(parentId) {
+    // Find the index of the parent in the active path
+    const parentIndex = state.activePath.indexOf(parentId);
+    if (parentIndex === -1) return;
+
+    // Trim the path up to and including the parent
+    state.activePath = state.activePath.slice(0, parentIndex + 1);
+
+    // Find the parent message
+    const parent = findMessageById(state.messageTree, parentId);
+    if (!parent || !parent.children || parent.children.length === 0) return;
+
+    // Get the selected child
+    const childIndex = state.branchIndices[parentId] || 0;
+    let current = parent.children[childIndex];
+
+    // Extend the path down the tree, always selecting the first (or previously selected) branch
+    while (current) {
+        state.activePath.push(current.id);
+
+        if (current.children && current.children.length > 0) {
+            const selectedIndex = state.branchIndices[current.id] || 0;
+            current = current.children[selectedIndex];
+        } else {
+            break;
+        }
+    }
+}
+
+// Message Rendering
+function renderMessages() {
+    elements.messagesContainer.innerHTML = '';
+
+    if (!state.messageTree || state.messageTree.length === 0) {
+        elements.messagesContainer.innerHTML = '<div class="empty-state"><p>No messages yet. Start the conversation!</p></div>';
+        return;
+    }
+
+    // Render messages along the active path
+    renderMessagesRecursive(state.messageTree, null, 0);
+}
+
+function renderMessagesRecursive(messages, parentId, depth) {
+    if (!messages || messages.length === 0) return;
+
+    // Determine which message to show at this level
+    let messageToShow;
+
+    if (parentId === null) {
+        // Root level - show first message
+        messageToShow = messages[0];
+    } else {
+        // Find the selected branch for this parent
+        const selectedIndex = state.branchIndices[parentId] || 0;
+        messageToShow = messages[selectedIndex];
+    }
+
+    if (!messageToShow) return;
+
+    // Render this message
+    const messageDiv = document.createElement('div');
+    messageDiv.className = `message ${messageToShow.role}`;
+    messageDiv.dataset.messageId = messageToShow.id;
+
+    const header = document.createElement('div');
+    header.className = 'message-header';
+
+    const role = document.createElement('div');
+    role.className = 'message-role';
+    role.textContent = messageToShow.role.charAt(0).toUpperCase() + messageToShow.role.slice(1);
+
+    header.appendChild(role);
+
+    if (messageToShow.model_used) {
+        const model = document.createElement('div');
+        model.className = 'message-model';
+        model.textContent = messageToShow.model_used;
+        header.appendChild(model);
+    }
+
+    const content = document.createElement('div');
+    content.className = 'message-content';
+    content.textContent = messageToShow.content;
+
+    messageDiv.appendChild(header);
+    messageDiv.appendChild(content);
+
+    // Add branch controls if this message has multiple children
+    if (messageToShow.children && messageToShow.children.length > 1) {
+        const branchControls = createBranchControls(messageToShow);
+        messageDiv.appendChild(branchControls);
+    }
+
+    elements.messagesContainer.appendChild(messageDiv);
+
+    // Recursively render children
+    if (messageToShow.children && messageToShow.children.length > 0) {
+        renderMessagesRecursive(messageToShow.children, messageToShow.id, depth + 1);
+    }
+
+    // Auto-scroll to bottom
+    elements.messagesContainer.scrollTop = elements.messagesContainer.scrollHeight;
+}
+
+function createBranchControls(message) {
+    const controls = document.createElement('div');
+    controls.className = 'branch-controls';
+
+    const nav = document.createElement('div');
+    nav.className = 'branch-nav';
+
+    const prevBtn = document.createElement('button');
+    prevBtn.textContent = '←';
+    prevBtn.onclick = () => switchBranch(message.id, -1);
+
+    const info = document.createElement('span');
+    info.className = 'branch-info';
+    const currentIndex = (state.branchIndices[message.id] || 0) + 1;
+    info.textContent = `${currentIndex} of ${message.children.length}`;
+
+    const nextBtn = document.createElement('button');
+    nextBtn.textContent = '→';
+    nextBtn.onclick = () => switchBranch(message.id, 1);
+
+    nav.appendChild(prevBtn);
+    nav.appendChild(info);
+    nav.appendChild(nextBtn);
+
+    controls.appendChild(nav);
+
+    return controls;
+}
+
+// Sending Messages
+async function sendMessage() {
+    const content = elements.messageInput.value.trim();
+    if (!content || !state.currentConversation) return;
+
+    const targetModel = elements.modelSelector.value;
+
+    // Get the current leaf message (where we're appending from)
+    const leafMessage = getActiveLeafMessage();
+    const parentId = leafMessage ? leafMessage.id : null;
+
+    // Clear input and show loading
+    elements.messageInput.value = '';
+    showLoading(true);
+
+    try {
+        const result = await apiCall('/messages', {
+            method: 'POST',
+            body: JSON.stringify({
+                conversation_id: state.currentConversation,
+                parent_id: parentId,
+                content: content,
+                target_model: targetModel,
+            }),
+        });
+
+        // Reload the conversation tree
+        await selectConversation(state.currentConversation);
+
+    } catch (error) {
+        alert('Failed to send message: ' + error.message);
+    } finally {
+        showLoading(false);
+    }
+}
+
+// Settings
+async function loadSettings() {
+    try {
+        const settings = await apiCall('/settings');
+        elements.openaiKey.value = settings.openai_key || '';
+        elements.anthropicKey.value = settings.anthropic_key || '';
+        elements.geminiKey.value = settings.gemini_key || '';
+    } catch (error) {
+        console.error('Failed to load settings:', error);
+    }
+}
+
+async function saveSettings() {
+    try {
+        await apiCall('/settings', {
+            method: 'POST',
+            body: JSON.stringify({
+                openai_key: elements.openaiKey.value,
+                anthropic_key: elements.anthropicKey.value,
+                gemini_key: elements.geminiKey.value,
+            }),
+        });
+
+        alert('Settings saved successfully!');
+        closeSettings();
+    } catch (error) {
+        alert('Failed to save settings: ' + error.message);
+    }
+}
+
+function openSettings() {
+    elements.settingsModal.classList.add('active');
+}
+
+function closeSettings() {
+    elements.settingsModal.classList.remove('active');
+}
+
+// UI Helpers
+function showLoading(show) {
+    elements.loadingOverlay.style.display = show ? 'flex' : 'none';
+}
+
+// Initialize the app when DOM is ready
+if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', init);
+} else {
+    init();
+}

@@ -1,0 +1,363 @@
+<!DOCTYPE html>
+<html class="dark" lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>LogicTree AI - Multi-Model Workspace</title>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries,typography"></script>
+<script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300..700&family=Manrope:wght@200..800&family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap" rel="stylesheet"/>
+<script id="tailwind-config">
+        tailwind.config = {
+            darkMode: "class",
+            theme: {
+                extend: {
+                    "colors": {
+                        "on-primary-container": "#002150",
+                        "on-tertiary-container": "#000000",
+                        "on-surface": "#dee5ff",
+                        "surface-container": "#0f1930",
+                        "inverse-surface": "#faf8ff",
+                        "on-tertiary": "#280067",
+                        "inverse-on-surface": "#4d556b",
+                        "primary": "#85adff",
+                        "surface-variant": "#192540",
+                        "on-primary-fixed-variant": "#002a62",
+                        "surface-container-lowest": "#000000",
+                        "outline": "#6d758c",
+                        "on-error-container": "#ffa8a3",
+                        "primary-fixed": "#6e9fff",
+                        "secondary-fixed": "#65e1ff",
+                        "tertiary": "#ac8aff",
+                        "surface": "#060e20",
+                        "tertiary-container": "#8f60fa",
+                        "on-tertiary-fixed": "#1f0052",
+                        "tertiary-fixed-dim": "#b091ff",
+                        "inverse-primary": "#005bc4",
+                        "on-primary": "#002c66",
+                        "error": "#ff716c",
+                        "surface-container-highest": "#192540",
+                        "secondary": "#53ddfc",
+                        "primary-dim": "#699cff",
+                        "on-secondary-container": "#ecfaff",
+                        "tertiary-fixed": "#bda2ff",
+                        "secondary-container": "#00687a",
+                        "error-container": "#9f0519",
+                        "primary-fixed-dim": "#5391ff",
+                        "on-primary-fixed": "#000000",
+                        "tertiary-dim": "#8455ef",
+                        "error-dim": "#d7383b",
+                        "on-background": "#dee5ff",
+                        "surface-bright": "#1f2b49",
+                        "surface-dim": "#060e20",
+                        "on-surface-variant": "#a3aac4",
+                        "on-secondary-fixed-variant": "#005969",
+                        "background": "#060e20",
+                        "surface-container-low": "#091328",
+                        "on-tertiary-fixed-variant": "#4600a8",
+                        "on-error": "#490006",
+                        "primary-container": "#6e9fff",
+                        "surface-tint": "#85adff",
+                        "outline-variant": "#40485d",
+                        "secondary-fixed-dim": "#48d4f3",
+                        "on-secondary": "#004b58",
+                        "surface-container-high": "#141f38",
+                        "on-secondary-fixed": "#003a45",
+                        "secondary-dim": "#40ceed"
+                    },
+                    "borderRadius": {
+                        "DEFAULT": "0.25rem",
+                        "lg": "0.5rem",
+                        "xl": "0.75rem",
+                        "full": "9999px"
+                    },
+                    "fontFamily": {
+                        "headline": ["Space Grotesk", "sans-serif"],
+                        "body": ["Manrope", "sans-serif"],
+                        "label": ["Space Grotesk", "sans-serif"],
+                        "mono": ["JetBrains Mono", "monospace"]
+                    }
+                }
+            }
+        }
+</script>
+<style>
+    body { background-color: theme('colors.surface'); color: theme('colors.on-surface'); }
+    .glass-panel {
+        background-color: rgba(31, 43, 73, 0.6);
+        backdrop-filter: blur(12px);
+        -webkit-backdrop-filter: blur(12px);
+        border: 1px solid rgba(64, 72, 93, 0.15);
+    }
+    .action-gradient {
+        background: linear-gradient(135deg, theme('colors.primary'), theme('colors.primary-container'));
+    }
+    .glow-active {
+        box-shadow: 0 0 32px 0 rgba(133, 173, 255, 0.08);
+    }
+    ::-webkit-scrollbar { width: 8px; height: 8px; }
+    ::-webkit-scrollbar-track { background: theme('colors.surface'); }
+    ::-webkit-scrollbar-thumb { background: theme('colors.surface-container-high'); border-radius: 4px; }
+    ::-webkit-scrollbar-thumb:hover { background: theme('colors.outline-variant'); }
+
+    /* Message Rendering Styles mapped from JS */
+    .message { display: flex; flex-direction: column; gap: 0.5rem; max-width: 90%; margin-bottom: 1rem; cursor: pointer; }
+    .message.user { align-self: flex-end; }
+    .message-header { display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.25rem; font-size: 10px; font-family: monospace; }
+    .message.user .message-header { align-self: flex-end; flex-direction: row-reverse; color: var(--text-primary); }
+    .message.assistant .message-header { color: #ac8aff; }
+    .message-role { font-weight: bold; }
+    .message-model { opacity: 0.7; }
+    .message-content { padding: 1rem; font-size: 0.875rem; line-height: 1.625; border-radius: 1rem; }
+    .message.user .message-content { background-color: #192540; border: 1px solid rgba(109, 117, 140, 0.2); border-top-right-radius: 0.125rem; }
+    .message.assistant .message-content { background-color: #0f1930; border-left: 2px solid #ac8aff; border-top-left-radius: 0.125rem; }
+    
+    .conversation-item { padding: 0.5rem 1rem; cursor: pointer; color: #a3aac4; font-size: 0.875rem; border-bottom: 1px solid rgba(109, 117, 140, 0.1); }
+    .conversation-item:hover { background-color: rgba(31, 43, 73, 0.4); color: #dee5ff; }
+    .conversation-item.active { background-color: rgba(31, 43, 73, 0.8); color: #53ddfc; border-left: 2px solid #53ddfc; }
+    
+    /* Modal Styles */
+    .modal { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.5); z-index: 100; align-items: center; justify-content: center; backdrop-filter: blur(4px); }
+    .modal.active { display: flex; }
+    .modal .modal-content {
+        background-color: theme('colors.surface-container-highest');
+        border-radius: 20px;
+        width: 100%;
+        max-width: 540px;
+        box-shadow: 0_24px_80px_-12px_rgba(0,0,0,0.8),0_0_0_1px_rgba(64,72,93,0.2),0_0_32px_rgba(133,173,255,0.04);
+        position: relative;
+        overflow: hidden;
+        display: flex;
+        flex-direction: column;
+        transform: scale(1);
+    }
+    .modal-header h2 { font-size: 1.5rem; }
+    .modal-body .form-group label { text-transform: uppercase; letter-spacing: 0.05em; font-weight: 500; }
+    .modal-body input { background-color: theme('colors.surface-container-low'); border: 0; border-bottom: 2px solid theme('colors.outline-variant'); border-radius: 0; padding: 0.75rem 1rem; }
+    .modal-footer { background-color: theme('colors.surface-container-low') !important; border-top: 1px solid theme('colors.outline-variant'); }
+    .btn-primary { background: linear-gradient(135deg, theme('colors.primary'), theme('colors.primary-container')) !important; color: theme('colors.on-primary-fixed') !important; border-radius: 0.5rem !important; }
+
+    /* Loading Overlay */
+    .loading-overlay { display: none; position: absolute; inset: 0; background: rgba(6, 14, 32, 0.7); z-index: 50; flex-direction: column; align-items: center; justify-content: center; color: #53ddfc; backdrop-filter: blur(2px); }
+    .spinner { border: 3px solid rgba(83, 221, 252, 0.3); border-radius: 50%; border-top: 3px solid #53ddfc; width: 40px; height: 40px; animation: spin 1s linear infinite; margin-bottom: 1rem; }
+    @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+    
+    #tree-canvas { display: block; cursor: grab; }
+    #tree-canvas:active { cursor: grabbing; }
+</style>
+</head>
+<body class="font-body h-screen flex overflow-hidden selection:bg-primary/30 selection:text-primary">
+
+<!-- SideNavBar -->
+<nav class="bg-[#091328] text-[#85adff] font-space-grotesk tracking-tight text-sm h-screen w-20 flex flex-col border-r border-[#40485d]/15 shadow-2xl shadow-[#85adff]/5 fixed left-0 top-0 bottom-0 z-50 py-6 items-center justify-between">
+<div class="flex flex-col items-center w-full gap-8">
+<!-- Brand Logo -->
+<div class="font-space-grotesk font-bold text-[#85adff] text-xl flex flex-col items-center justify-center w-12 h-12 rounded-xl bg-surface-container-high border border-outline-variant/20">
+    LT
+</div>
+<!-- Tabs -->
+<div class="flex flex-col w-full gap-4 items-center">
+<button class="w-full py-3 flex flex-col items-center gap-1 text-[#53ddfc] border-r-2 border-[#53ddfc] scale-95 active:scale-90 transition-transform bg-surface-container/50" onclick="if(state.viewMode !== 'split') toggleView()">
+<span class="material-symbols-outlined" data-weight="fill" style="font-variation-settings: 'FILL' 1;">account_tree</span>
+<span class="text-[10px] uppercase tracking-wider mt-1">Workspaces</span>
+</button>
+<button class="w-full py-3 flex flex-col items-center gap-1 text-[#40485d] hover:text-[#85adff] transition-colors duration-300 scale-95 active:scale-90 transition-transform" onclick="if(state.viewMode !== 'canvas') toggleView()">
+<span class="material-symbols-outlined">schema</span>
+<span class="text-[10px] uppercase tracking-wider mt-1">Canvas</span>
+</button>
+<button class="w-full py-3 flex flex-col items-center gap-1 text-[#40485d] hover:text-[#85adff] transition-colors duration-300 scale-95 active:scale-90 transition-transform">
+<span class="material-symbols-outlined">account_tree</span>
+<span class="text-[10px] uppercase tracking-wider mt-1">Nodes</span>
+</button>
+<button id="history-sidebar-btn" class="w-full py-3 flex flex-col items-center gap-1 text-[#40485d] hover:text-[#85adff] transition-colors duration-300 scale-95 active:scale-90 transition-transform" onclick="document.getElementById('history-panel').classList.toggle('hidden')">
+<span class="material-symbols-outlined">history</span>
+<span class="text-[10px] uppercase tracking-wider mt-1">History</span>
+</button>
+</div>
+</div>
+<div class="flex flex-col w-full gap-4 items-center">
+<button onclick="createNewConversation()" title="New Conversation" class="w-10 h-10 rounded-full flex items-center justify-center bg-surface-container-highest text-primary hover:bg-surface-bright transition-colors">
+<span class="material-symbols-outlined">add</span>
+</button>
+<div class="w-8 border-t border-outline-variant/30 my-2"></div>
+<button id="settings-btn" class="w-full py-2 flex flex-col items-center gap-1 text-[#40485d] hover:text-[#85adff] transition-colors duration-300">
+<span class="material-symbols-outlined">settings</span>
+</button>
+<button class="w-full py-2 flex flex-col items-center gap-1 text-[#40485d] hover:text-[#85adff] transition-colors duration-300">
+<span class="material-symbols-outlined">help_outline</span>
+</button>
+</div>
+</nav>
+
+<!-- History Panel -->
+<div id="history-panel" class="absolute left-20 top-0 bottom-0 w-64 bg-surface-container-low border-r border-outline-variant/15 z-40 flex flex-col hidden">
+    <div class="p-4 border-b border-outline-variant/15 font-bold flex justify-between items-center h-16">
+        <span class="text-[#85adff]">Conversations</span>
+        <button id="new-chat-btn" class="text-xs bg-primary text-on-primary px-3 py-1.5 rounded-md hover:bg-primary-dim transition-colors">+ New</button>
+    </div>
+    <div id="conversations-list" class="flex-1 overflow-y-auto"></div>
+</div>
+
+<!-- Main Content Area -->
+<main class="flex-1 ml-20 flex flex-col h-screen relative bg-surface">
+<!-- TopAppBar -->
+<header class="bg-[#060e20]/80 backdrop-blur-xl text-[#85adff] font-manrope font-medium text-xs uppercase tracking-widest w-full h-16 border-b border-[#40485d]/10 sticky top-0 flex justify-between items-center px-8 z-40">
+<div class="flex items-center gap-8">
+<span class="font-space-grotesk font-black text-[#85adff] text-2xl tracking-tight normal-case">LogicTree AI</span>
+<span id="chat-title" class="ml-2 font-mono text-sm text-on-surface-variant tracking-normal normal-case border-l border-outline-variant/30 pl-4 hidden md:inline-block">Select or create a conversation</span>
+<nav class="hidden lg:flex items-center gap-6 h-full">
+<a class="text-[#85adff] border-b-2 border-[#85adff] pb-1 h-16 flex items-center pt-1 scale-98 transition-all duration-200" href="#">Models</a>
+<a class="text-[#dee5ff]/60 hover:bg-[#1f2b49]/40 hover:text-[#53ddfc] h-16 flex items-center px-2 scale-98 transition-all duration-200" href="#">API Keys</a>
+<a class="text-[#dee5ff]/60 hover:bg-[#1f2b49]/40 hover:text-[#53ddfc] h-16 flex items-center px-2 scale-98 transition-all duration-200" href="#">Logs</a>
+</nav>
+</div>
+<div class="flex items-center gap-6">
+<!-- Search on right -->
+<div class="relative hidden md:block">
+<span class="material-symbols-outlined absolute left-3 top-1/2 -translate-y-1/2 text-outline text-sm">search</span>
+<input class="bg-surface-container-highest border-none rounded-full pl-9 pr-4 py-1.5 text-xs text-on-surface focus:ring-1 focus:ring-secondary/50 placeholder-on-surface-variant w-48" placeholder="Search logic..." type="text"/>
+</div>
+<div class="flex items-center gap-3">
+<button id="toggle-view-btn" class="bg-surface-container-highest border border-secondary/30 text-secondary px-4 py-1.5 rounded-full hover:bg-surface-bright transition-colors">Toggle View</button>
+<button class="action-gradient text-on-primary-fixed px-5 py-1.5 rounded-full hover:brightness-110 transition-all font-bold">Deploy Node</button>
+</div>
+<div class="flex items-center gap-4 ml-4 pl-4 border-l border-outline-variant/30">
+<button id="delete-chat-btn" class="text-error hover:text-error-container transition-colors" style="display: none;" title="Delete Chat">
+    <span class="material-symbols-outlined text-sm">delete</span>
+</button>
+<button class="text-outline hover:text-primary transition-colors">
+<span class="material-symbols-outlined">notifications</span>
+</button>
+<div class="w-8 h-8 rounded-full bg-surface-container-high overflow-hidden border border-outline-variant/50">
+<img alt="User Profile" class="w-full h-full object-cover" data-alt="portrait" src="https://lh3.googleusercontent.com/aida-public/AB6AXuD1J4XiwDpLHo1v9TC-0o4ZG5og_sb_jQhJa7j0NvYUeymU5GBF13PDby9Pc9U_T3dlBwgDy-K2n10sAG8tMivk_xiHGsvmCRPUF4ZQ1WgCRcJdNpfvcP2KZF4XbqJSCAziR5P5DVCBnTz5dbw7dwbDW-fLaVfId5LsgRs6LLHGLx0A3WsFHvKi48cedj-ZGicYLs07lFARuFCqE5nuIZ-WHXNTe4JZYCEWzDLz-1ObSxqSn7GlSKRngAnxYsUktcJk_H4UtSJ6W9-o"/>
+</div>
+</div>
+</div>
+</header>
+
+<!-- Main Workspace Split (Canvas and Chat) -->
+<div class="flex-1 flex overflow-hidden w-full split-view-container">
+    <!-- Left Panel: Canvas -->
+    <section id="canvas-panel" class="w-3/5 h-full relative bg-surface overflow-hidden flex flex-col transition-all duration-300">
+        <!-- Grid Background -->
+        <div class="absolute inset-0 opacity-10 pointer-events-none" style="background-image: radial-gradient(circle at center, #40485d 1px, transparent 1px); background-size: 24px 24px;"></div>
+        
+        <!-- Canvas Controls -->
+        <div class="absolute top-6 left-6 z-10 glass-panel rounded-lg border border-outline-variant/15 p-2 flex gap-2">
+            <button id="zoom-in-btn" class="p-1.5 text-on-surface-variant hover:text-primary rounded-md hover:bg-surface-container transition-colors"><span class="material-symbols-outlined text-sm">add</span></button>
+            <button id="zoom-out-btn" class="p-1.5 text-on-surface-variant hover:text-primary rounded-md hover:bg-surface-container transition-colors"><span class="material-symbols-outlined text-sm">remove</span></button>
+            <div class="w-px h-6 bg-outline-variant/30 self-center mx-1"></div>
+            <button id="reset-view-btn" class="p-1.5 text-on-surface-variant hover:text-primary rounded-md hover:bg-surface-container transition-colors"><span class="material-symbols-outlined text-sm">my_location</span></button>
+        </div>
+        
+        <canvas id="tree-canvas" class="w-full h-full absolute inset-0 z-0"></canvas>
+    </section>
+
+    <!-- Right Panel: Chat Interface -->
+    <section id="text-panel" class="w-2/5 h-full bg-surface-container-low border-l border-outline-variant/15 flex flex-col relative z-20 transition-all duration-300">
+        
+        <!-- Chat Messages Area -->
+        <div id="messages-container" class="flex-1 overflow-y-auto p-6 flex flex-col gap-4 scrollbar-hide">
+            <div class="empty-state text-on-surface-variant text-center mt-10">
+                <p>Start a new conversation or select an existing one.</p>
+            </div>
+        </div>
+        
+        <!-- Input Area -->
+        <div id="input-container" class="p-4 bg-surface-container-low border-t border-outline-variant/15" style="display: none;">
+            <div class="mb-2 flex flex-wrap gap-2" id="model-checkboxes">
+                <!-- Checkboxes populated dynamically by app.js based on available models -->
+            </div>
+            <div class="relative bg-surface-container-highest rounded-xl border border-outline-variant/30 focus-within:border-tertiary transition-colors shadow-inner">
+                <textarea id="message-input" class="w-full bg-transparent text-sm text-on-surface placeholder-on-surface-variant/50 p-4 pr-12 border-none focus:ring-0 resize-none rounded-xl" placeholder="Define execution parameters or provide context..." rows="3"></textarea>
+                <div class="absolute bottom-3 right-3 flex items-center gap-2">
+                    <button id="send-btn" class="bg-tertiary hover:bg-tertiary-container text-on-tertiary w-8 h-8 rounded-lg flex items-center justify-center transition-all shadow-lg hover:shadow-tertiary/20">
+                        <span class="material-symbols-outlined text-sm font-bold">send</span>
+                    </button>
+                </div>
+            </div>
+        </div>
+    </section>
+</div>
+</main>
+
+<!-- Loading Overlay -->
+<div id="loading-overlay" class="loading-overlay">
+    <div class="spinner"></div>
+    <p class="font-bold">Thinking...</p>
+</div>
+    
+<!-- Settings Modal -->
+<div id="settings-modal" class="modal">
+    <div class="w-full max-w-[540px] bg-surface-container-highest rounded-[20px] shadow-[0_24px_80px_-12px_rgba(0,0,0,0.8),0_0_0_1px_rgba(64,72,93,0.2),0_0_32px_rgba(133,173,255,0.04)] relative overflow-hidden flex flex-col transform transition-all scale-100">
+        <div class="absolute top-0 left-0 w-full h-[2px] bg-gradient-to-r from-transparent via-primary to-transparent opacity-60"></div>
+        <div class="px-8 pt-10 pb-6 border-b border-outline-variant/10">
+            <div class="flex items-center gap-3 mb-2">
+                <div class="w-8 h-8 rounded-lg bg-surface-bright flex items-center justify-center text-primary shadow-[0_0_12px_rgba(133,173,255,0.15)]">
+                    <span class="material-symbols-outlined text-[18px]">api</span>
+                </div>
+                <h2 class="font-headline text-2xl font-bold tracking-tight text-on-surface">LLM API Configuration</h2>
+            </div>
+            <p class="text-sm text-on-surface-variant font-body leading-relaxed ml-11">Configure provider keys to enable multi-branch model routing and orchestration.</p>
+            <button class="absolute top-4 right-4 text-2xl text-on-surface-variant hover:text-on-surface" id="close-settings">&times;</button>
+        </div>
+        <div class="px-8 py-8 flex flex-col gap-8 bg-surface-container-highest">
+            <div class="flex flex-col relative group">
+                <div class="flex justify-between items-end mb-1 pl-1">
+                    <label class="text-[11px] font-headline text-on-surface-variant tracking-widest uppercase font-medium">OpenAI API Key</label>
+                    <span class="text-[10px] text-tertiary-dim bg-tertiary-dim/10 px-2 py-0.5 rounded-full border border-tertiary-dim/20">Primary</span>
+                </div>
+                <div class="relative w-full">
+                    <span class="material-symbols-outlined absolute left-0 bottom-3 text-outline-variant text-[18px] z-10">key</span>
+                    <input id="openai-key" class="w-full bg-surface-container-low border-0 border-b-2 border-outline-variant focus:border-secondary focus:ring-0 text-secondary font-mono pl-8 pr-4 py-3 text-sm transition-all outline-none rounded-t-lg shadow-inner" placeholder="sk-..." type="password"/>
+                </div>
+            </div>
+            <div class="flex flex-col relative group">
+                <div class="flex justify-between items-end mb-1 pl-1">
+                    <label class="text-[11px] font-headline text-on-surface-variant tracking-widest uppercase font-medium">Anthropic API Key</label>
+                </div>
+                <div class="relative w-full">
+                    <span class="material-symbols-outlined absolute left-0 bottom-3 text-outline-variant text-[18px] z-10">key</span>
+                    <input id="anthropic-key" class="w-full bg-surface-container-low border-0 border-b-2 border-outline-variant focus:border-secondary focus:ring-0 text-secondary font-mono pl-8 pr-4 py-3 text-sm transition-all outline-none rounded-t-lg shadow-inner" placeholder="sk-ant-..." type="password"/>
+                </div>
+            </div>
+            <div class="flex flex-col relative group">
+                <div class="flex justify-between items-end mb-1 pl-1">
+                    <label class="text-[11px] font-headline text-on-surface-variant tracking-widest uppercase font-medium">Google GenAI Key</label>
+                </div>
+                <div class="relative w-full">
+                    <span class="material-symbols-outlined absolute left-0 bottom-3 text-outline-variant text-[18px] z-10">key</span>
+                    <input id="gemini-key" class="w-full bg-surface-container-low border-0 border-b-2 border-outline-variant focus:border-secondary focus:ring-0 text-secondary font-mono pl-8 pr-4 py-3 text-sm transition-all outline-none rounded-t-lg shadow-inner" placeholder="AIzaSy..." type="password"/>
+                </div>
+            </div>
+            <div class="flex flex-col relative group">
+                <div class="flex justify-between items-end mb-1 pl-1">
+                    <label class="text-[11px] font-headline text-on-surface-variant tracking-widest uppercase font-medium">Local Endpoint URL</label>
+                </div>
+                <div class="relative w-full">
+                    <span class="material-symbols-outlined absolute left-0 bottom-3 text-outline-variant text-[18px] z-10">link</span>
+                    <input id="local-endpoint-url" class="w-full bg-surface-container-low border-0 border-b-2 border-outline-variant focus:border-secondary focus:ring-0 text-secondary font-mono pl-8 pr-4 py-3 text-sm transition-all outline-none rounded-t-lg shadow-inner" placeholder="http://localhost:11434/v1" type="url"/>
+                </div>
+            </div>
+            <div class="flex flex-col relative group">
+                <div class="flex justify-between items-end mb-1 pl-1">
+                    <label class="text-[11px] font-headline text-on-surface-variant tracking-widest uppercase font-medium">Local Model Name</label>
+                </div>
+                <div class="relative w-full">
+                    <span class="material-symbols-outlined absolute left-0 bottom-3 text-outline-variant text-[18px] z-10">memory</span>
+                    <input id="local-model-name" class="w-full bg-surface-container-low border-0 border-b-2 border-outline-variant focus:border-secondary focus:ring-0 text-secondary font-mono pl-8 pr-4 py-3 text-sm transition-all outline-none rounded-t-lg shadow-inner" placeholder="qwen2.5" type="text"/>
+                </div>
+            </div>
+        </div>
+        <div class="px-8 py-6 bg-surface-container-low/50 border-t border-outline-variant/10 flex items-center justify-end gap-4 rounded-b-[20px]">
+            <button class="px-6 py-3 rounded-xl text-sm font-headline font-semibold text-on-surface-variant bg-surface-container-highest border border-outline-variant/30 hover:text-on-surface hover:bg-surface-bright hover:border-outline-variant/50 transition-all">Cancel</button>
+            <button id="save-settings-btn" class="px-8 py-3 rounded-xl text-sm font-headline font-bold text-on-primary-fixed bg-gradient-to-br from-primary to-primary-container hover:brightness-110 active:scale-[0.98] transition-all shadow-[0_0_24px_rgba(133,173,255,0.15)]">Save Configuration</button>
+        </div>
+    </div>
+</div>
+
+<script src="{{ url_for('static', filename='canvas.js') }}"></script>
+<script src="{{ url_for('static', filename='app.js') }}"></script>
+</body>
+</html>
