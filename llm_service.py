@@ -26,45 +26,88 @@ class LLMService:
         """Fetch available models from configured providers for the given user."""
         models = {'openai': [], 'anthropic': [], 'gemini': [], 'local': []}
 
+        # OpenAI models - fetch ALL available models
         if user_keys.get('openai_key'):
             try:
                 client = openai.OpenAI(api_key=user_keys.get('openai_key'))
                 res = client.models.list()
-                models['openai'] = sorted([
-                    m.id for m in res.data
-                    if 'gpt' in m.id or 'o1' in m.id or 'o3' in m.id
-                ])
-            except Exception:
-                models['openai'] = ['gpt-4o', 'gpt-4o-mini', 'gpt-4-turbo', 'gpt-3.5-turbo']
+                # Get all models without filtering
+                models['openai'] = sorted([m.id for m in res.data])
+                logger.info("OpenAI models fetched successfully: %d models", len(models['openai']))
+            except openai.AuthenticationError:
+                logger.warning("OpenAI authentication failed, using fallback models")
+                models['openai'] = [
+                    'gpt-4.1', 'gpt-4.1-mini', 'gpt-4o', 'gpt-4o-mini',
+                    'gpt-4-turbo', 'gpt-4', 'gpt-3.5-turbo',
+                    'o3', 'o3-mini', 'o3-pro', 'o4-mini',
+                    'o1', 'o1-mini', 'o1-preview',
+                ]
+            except Exception as e:
+                logger.warning("OpenAI models fetch failed: %s, using fallback", str(e))
+                models['openai'] = [
+                    'gpt-4.1', 'gpt-4.1-mini', 'gpt-4o', 'gpt-4o-mini',
+                    'gpt-4-turbo', 'gpt-4', 'gpt-3.5-turbo',
+                    'o3', 'o3-mini', 'o3-pro', 'o4-mini',
+                    'o1', 'o1-mini', 'o1-preview',
+                ]
 
+        # Anthropic models - using Models API
         if user_keys.get('anthropic_key'):
             try:
                 client = anthropic.Anthropic(api_key=user_keys.get('anthropic_key'))
-                if hasattr(client, 'models'):
-                    res = client.models.list()
-                    models['anthropic'] = [m.id for m in res.data]
-                else:
-                    models['anthropic'] = [
-                        'claude-3-7-sonnet-20250219',
-                        'claude-3-5-sonnet-20241022',
-                        'claude-3-5-haiku-20241022',
-                        'claude-3-opus-20240229',
-                    ]
-            except Exception:
+                # Use the Models API endpoint
+                res = client.models.list()
+                models['anthropic'] = sorted([m.id for m in res.data])
+                logger.info("Anthropic models fetched successfully: %d models", len(models['anthropic']))
+            except anthropic.AuthenticationError:
+                logger.warning("Anthropic authentication failed, using fallback models")
                 models['anthropic'] = [
                     'claude-3-7-sonnet-20250219',
                     'claude-3-5-sonnet-20241022',
                     'claude-3-5-haiku-20241022',
                     'claude-3-opus-20240229',
+                    'claude-3-sonnet-20240229',
+                    'claude-3-haiku-20240307',
+                ]
+            except Exception as e:
+                logger.warning("Anthropic models fetch failed: %s, using fallback", str(e))
+                models['anthropic'] = [
+                    'claude-3-7-sonnet-20250219',
+                    'claude-3-5-sonnet-20241022',
+                    'claude-3-5-haiku-20241022',
+                    'claude-3-opus-20240229',
+                    'claude-3-sonnet-20240229',
+                    'claude-3-haiku-20240307',
                 ]
 
+        # Gemini models - fetch ALL available models
         if user_keys.get('gemini_key'):
-            models['gemini'] = [
-                'gemini-3.1-pro-preview',
-                'gemini-3-flash-preview',
-                'gemini-3.1-flash-lite-preview',
-            ]
+            try:
+                client = genai.Client(api_key=user_keys.get('gemini_key'))
+                # List all models without filtering
+                available_models = []
+                for model in client.models.list():
+                    if hasattr(model, 'name'):
+                        available_models.append(model.name)
 
+                if available_models:
+                    models['gemini'] = sorted(available_models)
+                    logger.info("Gemini models fetched successfully: %d models", len(models['gemini']))
+                else:
+                    # No models found, use fallback
+                    raise Exception("No Gemini models found")
+            except Exception as e:
+                logger.warning("Gemini models fetch failed: %s, using fallback", str(e))
+                models['gemini'] = [
+                    'gemini-2.0-flash-exp',
+                    'gemini-exp-1206',
+                    'gemini-2.0-flash-thinking-exp-1219',
+                    'gemini-1.5-pro',
+                    'gemini-1.5-flash',
+                    'gemini-1.5-flash-8b',
+                ]
+
+        # Local models
         if user_keys.get('local_endpoint_url'):
             try:
                 client = openai.OpenAI(
@@ -72,10 +115,16 @@ class LLMService:
                     api_key='local-placeholder',
                 )
                 res = client.models.list()
-                models['local'] = [m.id for m in res.data]
-            except Exception:
+                models['local'] = sorted([m.id for m in res.data])
+                logger.info("Local models fetched successfully: %d models", len(models['local']))
+            except openai.APIConnectionError as e:
+                logger.warning("Local endpoint unreachable: %s, using fallback", str(e))
                 configured_model = user_keys.get('local_model_name')
-                models['local'] = [configured_model] if configured_model else ['qwen2.5', 'llama3']
+                models['local'] = [configured_model] if configured_model else ['qwen2.5', 'llama3.1', 'llama3']
+            except Exception as e:
+                logger.warning("Local models fetch failed: %s, using fallback", str(e))
+                configured_model = user_keys.get('local_model_name')
+                models['local'] = [configured_model] if configured_model else ['qwen2.5', 'llama3.1', 'llama3']
 
         return models
 
