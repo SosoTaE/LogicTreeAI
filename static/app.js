@@ -10,6 +10,7 @@ const state = {
     messageTree: null,
     activeNodeId: null, // Currently selected node in canvas
     viewMode: 'split', // 'split', 'canvas', 'text'
+    currentUser: null, // { id, username, role }
 };
 
 // Tree Visualizer Instance
@@ -44,15 +45,71 @@ const elements = {
     geminiKey: document.getElementById('gemini-key'),
     localEndpointUrl: document.getElementById('local-endpoint-url'),
     localModelName: document.getElementById('local-model-name'),
+    logoutBtn: document.getElementById('logout-btn'),
+    userUsername: document.getElementById('user-username'),
+    userRoleBadge: document.getElementById('user-role-badge'),
+    manageUsersBtn: document.getElementById('manage-users-btn'),
+    usersModal: document.getElementById('users-modal'),
+    closeUsers: document.getElementById('close-users'),
+    createUserForm: document.getElementById('create-user-form'),
+    newUsername: document.getElementById('new-username'),
+    newPassword: document.getElementById('new-password'),
+    newRole: document.getElementById('new-role'),
+    usersError: document.getElementById('users-error'),
+    usersList: document.getElementById('users-list'),
 };
 
 // Initialize Application
 async function init() {
     setupEventListeners();
     initializeTreeVisualizer();
+
+    const user = await loadCurrentUser();
+    if (!user) return; // redirected to /login
+
+    applyUserToUI(user);
+
     await loadConversations();
     await loadSettings();
     await loadModels();
+}
+
+async function loadCurrentUser() {
+    try {
+        const res = await fetch(`${API_BASE}/auth/me`, { credentials: 'same-origin' });
+        if (res.status === 401) {
+            window.location.href = '/login';
+            return null;
+        }
+        if (!res.ok) throw new Error('Failed to load user');
+        const user = await res.json();
+        state.currentUser = user;
+        return user;
+    } catch (err) {
+        console.error('Failed to load current user:', err);
+        return null;
+    }
+}
+
+function applyUserToUI(user) {
+    if (elements.userUsername) elements.userUsername.textContent = user.username;
+    if (elements.userRoleBadge) elements.userRoleBadge.textContent = user.role;
+    if (elements.manageUsersBtn) {
+        elements.manageUsersBtn.style.display = user.role === 'admin' ? 'inline-flex' : 'none';
+    }
+}
+
+async function logout() {
+    try {
+        await fetch(`${API_BASE}/auth/logout`, {
+            method: 'POST',
+            credentials: 'same-origin',
+        });
+    } catch (err) {
+        console.error('Logout error:', err);
+    } finally {
+        window.location.href = '/login';
+    }
 }
 
 function initializeTreeVisualizer() {
@@ -95,6 +152,131 @@ function setupEventListeners() {
             closeSettings();
         }
     });
+
+    if (elements.logoutBtn) elements.logoutBtn.addEventListener('click', logout);
+
+    if (elements.manageUsersBtn) elements.manageUsersBtn.addEventListener('click', openUsersModal);
+    if (elements.closeUsers) elements.closeUsers.addEventListener('click', closeUsersModal);
+    if (elements.usersModal) {
+        elements.usersModal.addEventListener('click', (e) => {
+            if (e.target === elements.usersModal) closeUsersModal();
+        });
+    }
+    if (elements.createUserForm) {
+        elements.createUserForm.addEventListener('submit', handleCreateUser);
+    }
+}
+
+// ==================== User Management (admin) ====================
+async function openUsersModal() {
+    if (!state.currentUser || state.currentUser.role !== 'admin') return;
+    elements.usersModal.classList.add('active');
+    clearUsersError();
+    await loadUsers();
+}
+
+function closeUsersModal() {
+    elements.usersModal.classList.remove('active');
+}
+
+function showUsersError(msg) {
+    if (!elements.usersError) return;
+    elements.usersError.textContent = msg;
+    elements.usersError.classList.remove('hidden');
+}
+
+function clearUsersError() {
+    if (!elements.usersError) return;
+    elements.usersError.textContent = '';
+    elements.usersError.classList.add('hidden');
+}
+
+async function loadUsers() {
+    try {
+        const users = await apiCall('/users');
+        renderUsers(users);
+    } catch (err) {
+        showUsersError('Failed to load users: ' + err.message);
+    }
+}
+
+function renderUsers(users) {
+    elements.usersList.innerHTML = '';
+    if (!users.length) {
+        elements.usersList.innerHTML = '<div class="px-4 py-3 text-sm text-on-surface-variant">No users yet.</div>';
+        return;
+    }
+    users.forEach(u => {
+        const row = document.createElement('div');
+        row.className = 'flex items-center justify-between px-4 py-3 bg-surface-container-low';
+        const isSelf = state.currentUser && u.id === state.currentUser.id;
+
+        const left = document.createElement('div');
+        left.className = 'flex flex-col';
+        const name = document.createElement('span');
+        name.className = 'font-mono text-sm text-on-surface';
+        name.textContent = u.username + (isSelf ? '  (you)' : '');
+        const meta = document.createElement('span');
+        meta.className = 'text-[10px] uppercase tracking-widest text-on-surface-variant';
+        meta.textContent = `${u.role} · created ${new Date(u.created_at).toLocaleDateString()}`;
+        left.appendChild(name);
+        left.appendChild(meta);
+
+        const right = document.createElement('div');
+        right.className = 'flex items-center gap-2';
+        if (!isSelf) {
+            const delBtn = document.createElement('button');
+            delBtn.className = 'text-error hover:text-error-container transition-colors';
+            delBtn.title = 'Delete user';
+            delBtn.innerHTML = '<span class="material-symbols-outlined text-sm">delete</span>';
+            delBtn.addEventListener('click', () => deleteUser(u));
+            right.appendChild(delBtn);
+        }
+
+        row.appendChild(left);
+        row.appendChild(right);
+        elements.usersList.appendChild(row);
+    });
+}
+
+async function handleCreateUser(e) {
+    e.preventDefault();
+    clearUsersError();
+    const username = elements.newUsername.value.trim();
+    const password = elements.newPassword.value;
+    const role = elements.newRole.value;
+
+    if (!username || !password) {
+        showUsersError('Username and password are required');
+        return;
+    }
+    if (password.length < 6) {
+        showUsersError('Password must be at least 6 characters');
+        return;
+    }
+
+    try {
+        await apiCall('/users', {
+            method: 'POST',
+            body: JSON.stringify({ username, password, role }),
+        });
+        elements.newUsername.value = '';
+        elements.newPassword.value = '';
+        elements.newRole.value = 'user';
+        await loadUsers();
+    } catch (err) {
+        showUsersError(err.message);
+    }
+}
+
+async function deleteUser(user) {
+    if (!confirm(`Delete user "${user.username}"? This also removes their conversations and settings.`)) return;
+    try {
+        await apiCall(`/users/${user.id}`, { method: 'DELETE' });
+        await loadUsers();
+    } catch (err) {
+        showUsersError(err.message);
+    }
 }
 
 function toggleView() {
@@ -130,6 +312,7 @@ function toggleView() {
 async function apiCall(endpoint, options = {}) {
     try {
         const response = await fetch(`${API_BASE}${endpoint}`, {
+            credentials: 'same-origin',
             headers: {
                 'Content-Type': 'application/json',
                 ...options.headers,
@@ -137,8 +320,13 @@ async function apiCall(endpoint, options = {}) {
             ...options,
         });
 
+        if (response.status === 401) {
+            window.location.href = '/login';
+            throw new Error('Authentication required');
+        }
+
         if (!response.ok) {
-            const error = await response.json();
+            const error = await response.json().catch(() => ({}));
             throw new Error(error.message || 'API request failed');
         }
 

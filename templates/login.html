@@ -1,0 +1,154 @@
+<!DOCTYPE html>
+<html class="dark" lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>LogicTree AI - Sign In</title>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries,typography"></script>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300..700&family=Manrope:wght@200..800&family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap" rel="stylesheet"/>
+<script>
+    tailwind.config = {
+        darkMode: "class",
+        theme: {
+            extend: {
+                colors: {
+                    "on-surface": "#dee5ff",
+                    "surface-container": "#0f1930",
+                    "surface-container-low": "#091328",
+                    "surface-container-high": "#141f38",
+                    "surface-container-highest": "#192540",
+                    "surface-bright": "#1f2b49",
+                    "surface": "#060e20",
+                    "primary": "#85adff",
+                    "primary-container": "#6e9fff",
+                    "on-primary-fixed": "#000000",
+                    "on-surface-variant": "#a3aac4",
+                    "outline": "#6d758c",
+                    "outline-variant": "#40485d",
+                    "secondary": "#53ddfc",
+                    "error": "#ff716c",
+                    "tertiary": "#ac8aff",
+                },
+                fontFamily: {
+                    headline: ["Space Grotesk", "sans-serif"],
+                    body: ["Manrope", "sans-serif"],
+                    mono: ["JetBrains Mono", "monospace"],
+                },
+            },
+        },
+    };
+</script>
+<style>
+    body { background-color: #060e20; color: #dee5ff; }
+    .glow {
+        box-shadow: 0 24px 80px -12px rgba(0,0,0,0.8),
+                    0 0 0 1px rgba(64,72,93,0.2),
+                    0 0 32px rgba(133,173,255,0.08);
+    }
+    .action-gradient {
+        background: linear-gradient(135deg, #85adff, #6e9fff);
+    }
+</style>
+</head>
+<body class="font-body h-screen flex items-center justify-center">
+    <div class="w-full max-w-md mx-auto p-8">
+        <div class="flex items-center gap-3 mb-8 justify-center">
+            <div class="w-12 h-12 rounded-xl bg-surface-container-high border border-outline-variant/20 flex items-center justify-center">
+                <span class="font-headline font-bold text-primary text-xl">LT</span>
+            </div>
+            <span class="font-headline font-black text-primary text-2xl tracking-tight">LogicTree AI</span>
+        </div>
+
+        <div class="bg-surface-container-highest rounded-[20px] overflow-hidden glow">
+            <div class="absolute top-0 left-0 w-full h-[2px] bg-gradient-to-r from-transparent via-primary to-transparent opacity-60"></div>
+            <div class="px-8 pt-10 pb-4">
+                <h1 class="font-headline text-2xl font-bold tracking-tight mb-2">Sign in</h1>
+                <p class="text-sm text-on-surface-variant leading-relaxed">
+                    Accounts are provisioned by an administrator. Contact your admin if you need access.
+                </p>
+            </div>
+
+            <form id="login-form" class="px-8 pb-8 flex flex-col gap-6">
+                <div class="flex flex-col">
+                    <label class="text-[11px] font-headline text-on-surface-variant tracking-widest uppercase font-medium mb-1 pl-1" for="username">Username</label>
+                    <div class="relative">
+                        <span class="material-symbols-outlined absolute left-0 bottom-3 text-outline-variant text-[18px] z-10">person</span>
+                        <input id="username" name="username" type="text" autocomplete="username" required
+                               class="w-full bg-surface-container-low border-0 border-b-2 border-outline-variant focus:border-secondary focus:ring-0 text-secondary font-mono pl-8 pr-4 py-3 text-sm transition-all outline-none rounded-t-lg shadow-inner"/>
+                    </div>
+                </div>
+
+                <div class="flex flex-col">
+                    <label class="text-[11px] font-headline text-on-surface-variant tracking-widest uppercase font-medium mb-1 pl-1" for="password">Password</label>
+                    <div class="relative">
+                        <span class="material-symbols-outlined absolute left-0 bottom-3 text-outline-variant text-[18px] z-10">lock</span>
+                        <input id="password" name="password" type="password" autocomplete="current-password" required
+                               class="w-full bg-surface-container-low border-0 border-b-2 border-outline-variant focus:border-secondary focus:ring-0 text-secondary font-mono pl-8 pr-4 py-3 text-sm transition-all outline-none rounded-t-lg shadow-inner"/>
+                    </div>
+                </div>
+
+                <div id="error-msg" class="hidden text-error text-sm border border-error/40 bg-error/10 rounded-lg px-4 py-2"></div>
+
+                <button type="submit" id="submit-btn"
+                        class="mt-2 px-8 py-3 rounded-xl text-sm font-headline font-bold text-on-primary-fixed action-gradient hover:brightness-110 active:scale-[0.98] transition-all">
+                    Sign in
+                </button>
+            </form>
+        </div>
+
+        <p class="text-xs text-on-surface-variant text-center mt-6">
+            First-time setup? Run <span class="font-mono text-secondary">python create_admin.py</span> from the server console to create the initial admin.
+        </p>
+    </div>
+
+<script>
+(function() {
+    const form = document.getElementById('login-form');
+    const errorBox = document.getElementById('error-msg');
+    const submitBtn = document.getElementById('submit-btn');
+
+    function showError(msg) {
+        errorBox.textContent = msg;
+        errorBox.classList.remove('hidden');
+    }
+
+    function clearError() {
+        errorBox.textContent = '';
+        errorBox.classList.add('hidden');
+    }
+
+    form.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        clearError();
+        submitBtn.disabled = true;
+        const original = submitBtn.textContent;
+        submitBtn.textContent = 'Signing in...';
+
+        try {
+            const res = await fetch('/api/auth/login', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                credentials: 'same-origin',
+                body: JSON.stringify({
+                    username: document.getElementById('username').value,
+                    password: document.getElementById('password').value,
+                }),
+            });
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok) {
+                showError(data.message || 'Sign-in failed');
+                return;
+            }
+            window.location.href = '/';
+        } catch (err) {
+            showError('Network error: ' + err.message);
+        } finally {
+            submitBtn.disabled = false;
+            submitBtn.textContent = original;
+        }
+    });
+})();
+</script>
+</body>
+</html>

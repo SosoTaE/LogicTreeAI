@@ -1,32 +1,99 @@
 from datetime import datetime
-from sqlalchemy import create_engine, Column, Integer, String, Text, DateTime, ForeignKey
+from sqlalchemy import (
+    create_engine, Column, Integer, String, Text, DateTime,
+    ForeignKey, UniqueConstraint,
+)
 from sqlalchemy.orm import declarative_base, relationship, Session
+from werkzeug.security import generate_password_hash, check_password_hash
 from config import Config
 
 Base = declarative_base()
 
-class Settings(Base):
-    """Key-value table for storing API keys"""
-    __tablename__ = 'settings'
+# Keys supported per-user for LLM configuration
+SETTINGS_KEYS = [
+    'openai_key',
+    'anthropic_key',
+    'gemini_key',
+    'local_endpoint_url',
+    'local_model_name',
+]
+
+ROLE_ADMIN = 'admin'
+ROLE_USER = 'user'
+VALID_ROLES = {ROLE_ADMIN, ROLE_USER}
+
+
+class User(Base):
+    """Application user with role-based access"""
+    __tablename__ = 'users'
 
     id = Column(Integer, primary_key=True)
-    key = Column(String(50), unique=True, nullable=False)
-    value = Column(Text, nullable=True)
+    username = Column(String(80), unique=True, nullable=False)
+    password_hash = Column(String(255), nullable=False)
+    role = Column(String(20), nullable=False, default=ROLE_USER)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    settings = relationship(
+        'Settings', back_populates='user',
+        cascade='all, delete-orphan',
+    )
+    conversations = relationship(
+        'Conversation', back_populates='user',
+        cascade='all, delete-orphan',
+    )
+
+    def set_password(self, password):
+        self.password_hash = generate_password_hash(password)
+
+    def check_password(self, password):
+        return check_password_hash(self.password_hash, password)
+
+    @property
+    def is_admin(self):
+        return self.role == ROLE_ADMIN
+
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'username': self.username,
+            'role': self.role,
+            'created_at': self.created_at.isoformat() if self.created_at else None,
+        }
 
     def __repr__(self):
-        return f"<Settings(key='{self.key}')>"
+        return f"<User(id={self.id}, username='{self.username}', role='{self.role}')>"
+
+
+class Settings(Base):
+    """Per-user key-value table for storing API keys"""
+    __tablename__ = 'settings'
+    __table_args__ = (UniqueConstraint('user_id', 'key', name='uq_settings_user_key'),)
+
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey('users.id', ondelete='CASCADE'), nullable=False)
+    key = Column(String(50), nullable=False)
+    value = Column(Text, nullable=True)
+
+    user = relationship('User', back_populates='settings')
+
+    def __repr__(self):
+        return f"<Settings(user_id={self.user_id}, key='{self.key}')>"
 
 
 class Conversation(Base):
-    """Represents a single chat tree"""
+    """Represents a single chat tree owned by a user"""
     __tablename__ = 'conversations'
 
     id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey('users.id', ondelete='CASCADE'), nullable=False)
     title = Column(String(200), nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
 
-    # Relationship to messages
-    messages = relationship('Message', back_populates='conversation', cascade='all, delete-orphan')
+    user = relationship('User', back_populates='conversations')
+    messages = relationship(
+        'Message', back_populates='conversation',
+        cascade='all, delete-orphan',
+    )
 
     def __repr__(self):
         return f"<Conversation(id={self.id}, title='{self.title}')>"
@@ -38,13 +105,12 @@ class Message(Base):
 
     id = Column(Integer, primary_key=True)
     conversation_id = Column(Integer, ForeignKey('conversations.id'), nullable=False)
-    parent_id = Column(Integer, ForeignKey('messages.id'), nullable=True)  # None for root messages
-    role = Column(String(20), nullable=False)  # 'system', 'user', or 'assistant'
+    parent_id = Column(Integer, ForeignKey('messages.id'), nullable=True)
+    role = Column(String(20), nullable=False)
     content = Column(Text, nullable=False)
-    model_used = Column(String(50), nullable=True)  # Which LLM was used (for assistant messages)
+    model_used = Column(String(50), nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
 
-    # Relationships
     conversation = relationship('Conversation', back_populates='messages')
     parent = relationship('Message', remote_side=[id], backref='children')
 
@@ -52,25 +118,19 @@ class Message(Base):
         """
         Reconstruct the full conversation path from this message up to the root.
         Returns a list of messages ordered from root to current message.
-        This is critical for providing the correct context window to the LLM.
         """
         path = []
         current = self
-
-        # Traverse up the tree to the root
         while current is not None:
             path.append(current)
             if current.parent_id is not None:
                 current = session.query(Message).filter_by(id=current.parent_id).first()
             else:
                 current = None
-
-        # Reverse to get root-to-current order
         path.reverse()
         return path
 
     def to_dict(self, include_children=False):
-        """Convert message to dictionary for JSON serialization"""
         result = {
             'id': self.id,
             'conversation_id': self.conversation_id,
@@ -78,40 +138,61 @@ class Message(Base):
             'role': self.role,
             'content': self.content,
             'model_used': self.model_used,
-            'created_at': self.created_at.isoformat() if self.created_at else None
+            'created_at': self.created_at.isoformat() if self.created_at else None,
         }
-
         if include_children and hasattr(self, 'children'):
             result['children'] = [child.to_dict(include_children=True) for child in self.children]
             result['child_count'] = len(self.children)
-
         return result
 
     def __repr__(self):
         return f"<Message(id={self.id}, role='{self.role}', parent_id={self.parent_id})>"
 
 
-# Database initialization
 engine = create_engine(Config.SQLALCHEMY_DATABASE_URI)
+
 
 def init_db():
     """Initialize the database and create all tables"""
     Base.metadata.create_all(engine)
 
-    # Initialize default API key entries if they don't exist
-    session = Session(engine)
-    try:
-        for key_name in ['openai_key', 'anthropic_key', 'gemini_key', 'local_endpoint_url', 'local_model_name']:
-            existing = session.query(Settings).filter_by(key=key_name).first()
-            if not existing:
-                session.add(Settings(key=key_name, value=''))
-        session.commit()
-    except Exception as e:
-        session.rollback()
-        raise e
-    finally:
-        session.close()
 
 def get_session():
     """Get a new database session"""
     return Session(engine)
+
+
+def seed_user_settings(session, user_id):
+    """Create empty setting rows for a newly created user."""
+    for key_name in SETTINGS_KEYS:
+        existing = session.query(Settings).filter_by(user_id=user_id, key=key_name).first()
+        if not existing:
+            session.add(Settings(user_id=user_id, key=key_name, value=''))
+
+
+def get_user_api_keys(session, user_id):
+    """Return dict of {key: value} for a user's API keys."""
+    rows = session.query(Settings).filter_by(user_id=user_id).all()
+    keys = {k: None for k in SETTINGS_KEYS}
+    for row in rows:
+        keys[row.key] = row.value if row.value else None
+    return keys
+
+
+def create_user(session, username, password, role=ROLE_USER):
+    """Create a new user and seed their settings. Raises on duplicate username."""
+    if role not in VALID_ROLES:
+        raise ValueError(f"Invalid role: {role}")
+    if not username or not password:
+        raise ValueError("Username and password are required")
+
+    existing = session.query(User).filter_by(username=username).first()
+    if existing:
+        raise ValueError(f"User '{username}' already exists")
+
+    user = User(username=username, role=role)
+    user.set_password(password)
+    session.add(user)
+    session.flush()  # assign id
+    seed_user_settings(session, user.id)
+    return user

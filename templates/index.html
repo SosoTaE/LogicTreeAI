@@ -226,11 +226,20 @@
 <button id="delete-chat-btn" class="text-error hover:text-error-container transition-colors" style="display: none;" title="Delete Chat">
     <span class="material-symbols-outlined text-sm">delete</span>
 </button>
-<button class="text-outline hover:text-primary transition-colors">
+<button id="manage-users-btn" class="text-outline hover:text-primary transition-colors" style="display: none;" title="Manage Users">
+    <span class="material-symbols-outlined">group</span>
+</button>
+<button class="text-outline hover:text-primary transition-colors" title="Notifications">
 <span class="material-symbols-outlined">notifications</span>
 </button>
-<div class="w-8 h-8 rounded-full bg-surface-container-high overflow-hidden border border-outline-variant/50">
-<img alt="User Profile" class="w-full h-full object-cover" data-alt="portrait" src="https://lh3.googleusercontent.com/aida-public/AB6AXuD1J4XiwDpLHo1v9TC-0o4ZG5og_sb_jQhJa7j0NvYUeymU5GBF13PDby9Pc9U_T3dlBwgDy-K2n10sAG8tMivk_xiHGsvmCRPUF4ZQ1WgCRcJdNpfvcP2KZF4XbqJSCAziR5P5DVCBnTz5dbw7dwbDW-fLaVfId5LsgRs6LLHGLx0A3WsFHvKi48cedj-ZGicYLs07lFARuFCqE5nuIZ-WHXNTe4JZYCEWzDLz-1ObSxqSn7GlSKRngAnxYsUktcJk_H4UtSJ6W9-o"/>
+<div class="flex items-center gap-2 pl-2 border-l border-outline-variant/30">
+    <div class="flex flex-col items-end text-right leading-tight">
+        <span id="user-username" class="text-xs font-mono text-on-surface normal-case"></span>
+        <span id="user-role-badge" class="text-[9px] uppercase tracking-widest text-tertiary"></span>
+    </div>
+    <button id="logout-btn" class="text-outline hover:text-error transition-colors" title="Sign out">
+        <span class="material-symbols-outlined">logout</span>
+    </button>
 </div>
 </div>
 </div>
@@ -353,6 +362,55 @@
         <div class="px-8 py-6 bg-surface-container-low/50 border-t border-outline-variant/10 flex items-center justify-end gap-4 rounded-b-[20px]">
             <button class="px-6 py-3 rounded-xl text-sm font-headline font-semibold text-on-surface-variant bg-surface-container-highest border border-outline-variant/30 hover:text-on-surface hover:bg-surface-bright hover:border-outline-variant/50 transition-all">Cancel</button>
             <button id="save-settings-btn" class="px-8 py-3 rounded-xl text-sm font-headline font-bold text-on-primary-fixed bg-gradient-to-br from-primary to-primary-container hover:brightness-110 active:scale-[0.98] transition-all shadow-[0_0_24px_rgba(133,173,255,0.15)]">Save Configuration</button>
+        </div>
+    </div>
+</div>
+
+<!-- Users Management Modal (admin only) -->
+<div id="users-modal" class="modal">
+    <div class="w-full max-w-[640px] bg-surface-container-highest rounded-[20px] shadow-[0_24px_80px_-12px_rgba(0,0,0,0.8),0_0_0_1px_rgba(64,72,93,0.2),0_0_32px_rgba(133,173,255,0.04)] relative overflow-hidden flex flex-col transform transition-all scale-100">
+        <div class="absolute top-0 left-0 w-full h-[2px] bg-gradient-to-r from-transparent via-primary to-transparent opacity-60"></div>
+        <div class="px-8 pt-10 pb-6 border-b border-outline-variant/10">
+            <div class="flex items-center gap-3 mb-2">
+                <div class="w-8 h-8 rounded-lg bg-surface-bright flex items-center justify-center text-primary shadow-[0_0_12px_rgba(133,173,255,0.15)]">
+                    <span class="material-symbols-outlined text-[18px]">group</span>
+                </div>
+                <h2 class="font-headline text-2xl font-bold tracking-tight text-on-surface">User Management</h2>
+            </div>
+            <p class="text-sm text-on-surface-variant font-body leading-relaxed ml-11">Create and manage user accounts. Only administrators can provision access.</p>
+            <button class="absolute top-4 right-4 text-2xl text-on-surface-variant hover:text-on-surface" id="close-users">&times;</button>
+        </div>
+
+        <div class="px-8 py-6 bg-surface-container-highest flex flex-col gap-6">
+            <!-- Create user form -->
+            <form id="create-user-form" class="flex flex-col gap-4 p-4 bg-surface-container-low rounded-xl border border-outline-variant/20">
+                <div class="text-xs font-headline uppercase tracking-widest text-on-surface-variant">Create new user</div>
+                <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                    <input id="new-username" type="text" placeholder="username" required
+                           class="bg-surface-container-highest border-0 border-b-2 border-outline-variant focus:border-secondary focus:ring-0 text-secondary font-mono px-3 py-2 text-sm rounded-t-lg outline-none"/>
+                    <input id="new-password" type="password" placeholder="password (min 6)" required
+                           class="bg-surface-container-highest border-0 border-b-2 border-outline-variant focus:border-secondary focus:ring-0 text-secondary font-mono px-3 py-2 text-sm rounded-t-lg outline-none"/>
+                    <select id="new-role"
+                            class="bg-surface-container-highest border-0 border-b-2 border-outline-variant focus:border-secondary focus:ring-0 text-secondary font-mono px-3 py-2 text-sm rounded-t-lg outline-none">
+                        <option value="user">user</option>
+                        <option value="admin">admin</option>
+                    </select>
+                </div>
+                <div id="users-error" class="hidden text-error text-sm border border-error/40 bg-error/10 rounded-lg px-3 py-2"></div>
+                <div class="flex justify-end">
+                    <button type="submit" class="px-5 py-2 rounded-lg text-xs font-headline font-bold text-on-primary-fixed action-gradient hover:brightness-110 active:scale-[0.98] transition-all">
+                        Create account
+                    </button>
+                </div>
+            </form>
+
+            <!-- Users list -->
+            <div>
+                <div class="text-xs font-headline uppercase tracking-widest text-on-surface-variant mb-2">Accounts</div>
+                <div id="users-list" class="divide-y divide-outline-variant/20 rounded-xl border border-outline-variant/20 overflow-hidden">
+                    <div class="px-4 py-3 text-sm text-on-surface-variant">Loading…</div>
+                </div>
+            </div>
         </div>
     </div>
 </div>
