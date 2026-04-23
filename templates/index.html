@@ -174,6 +174,10 @@
 <span class="material-symbols-outlined">history</span>
 <span class="text-[10px] uppercase tracking-wider mt-1">History</span>
 </button>
+<button id="multi-agent-sidebar-btn" class="w-full py-3 flex flex-col items-center gap-1 text-[#40485d] hover:text-[#85adff] transition-colors duration-300 scale-95 active:scale-90 transition-transform" onclick="document.getElementById('multi-agent-panel').classList.toggle('hidden')">
+<span class="material-symbols-outlined">groups</span>
+<span class="text-[10px] uppercase tracking-wider mt-1">Multi-AI</span>
+</button>
 </div>
 </div>
 <div class="flex flex-col w-full gap-4 items-center">
@@ -197,6 +201,15 @@
         <button id="new-chat-btn" class="text-xs bg-primary text-on-primary px-3 py-1.5 rounded-md hover:bg-primary-dim transition-colors">+ New</button>
     </div>
     <div id="conversations-list" class="flex-1 overflow-y-auto"></div>
+</div>
+
+<!-- Multi-Agent Panel -->
+<div id="multi-agent-panel" class="absolute left-20 top-0 bottom-0 w-80 bg-surface-container-low border-r border-outline-variant/15 z-40 flex flex-col hidden">
+    <div class="p-4 border-b border-outline-variant/15 font-bold flex justify-between items-center h-16">
+        <span class="text-[#85adff]">Multi-Agent Sessions</span>
+        <button id="new-multi-agent-btn" class="text-xs bg-tertiary text-on-tertiary px-3 py-1.5 rounded-md hover:bg-tertiary-dim transition-colors">+ New</button>
+    </div>
+    <div id="multi-agent-sessions-list" class="flex-1 overflow-y-auto"></div>
 </div>
 
 <!-- Main Content Area -->
@@ -415,7 +428,99 @@
     </div>
 </div>
 
+<!-- Multi-Agent Session Modal -->
+<div id="multi-agent-modal" class="modal">
+    <div class="w-full max-w-[640px] bg-surface-container-highest rounded-[20px] shadow-[0_24px_80px_-12px_rgba(0,0,0,0.8),0_0_0_1px_rgba(64,72,93,0.2),0_0_32px_rgba(133,173,255,0.04)] relative overflow-hidden flex flex-col transform transition-all scale-100">
+        <div class="absolute top-0 left-0 w-full h-[2px] bg-gradient-to-r from-transparent via-tertiary to-transparent opacity-60"></div>
+        <div class="px-8 pt-10 pb-6 border-b border-outline-variant/10">
+            <div class="flex items-center gap-3 mb-2">
+                <div class="w-8 h-8 rounded-lg bg-surface-bright flex items-center justify-center text-tertiary shadow-[0_0_12px_rgba(172,138,255,0.15)]">
+                    <span class="material-symbols-outlined text-[18px]">groups</span>
+                </div>
+                <h2 class="font-headline text-2xl font-bold tracking-tight text-on-surface">Multi-Agent Discussion</h2>
+            </div>
+            <p class="text-sm text-on-surface-variant font-body leading-relaxed ml-11">Enable multiple AI models to collaborate and discuss issues together.</p>
+            <button class="absolute top-4 right-4 text-2xl text-on-surface-variant hover:text-on-surface" id="close-multi-agent">&times;</button>
+        </div>
+        <form id="multi-agent-form" class="px-8 py-8 flex flex-col gap-6 bg-surface-container-highest max-h-[60vh] overflow-y-auto">
+            <div class="flex flex-col">
+                <label class="text-[11px] font-headline text-on-surface-variant tracking-widest uppercase font-medium mb-2 pl-1">Session Title</label>
+                <input id="ma-title" class="w-full bg-surface-container-low border-0 border-b-2 border-outline-variant focus:border-tertiary focus:ring-0 text-on-surface pl-4 pr-4 py-3 text-sm transition-all outline-none rounded-t-lg shadow-inner" placeholder="e.g., Solving the optimization problem" type="text"/>
+            </div>
+
+            <div class="flex flex-col">
+                <label class="text-[11px] font-headline text-on-surface-variant tracking-widest uppercase font-medium mb-2 pl-1">Problem/Question</label>
+                <textarea id="ma-problem" rows="4" class="w-full bg-surface-container-low border-0 border-b-2 border-outline-variant focus:border-tertiary focus:ring-0 text-on-surface p-4 text-sm transition-all outline-none rounded-t-lg shadow-inner resize-none" placeholder="Describe the problem or question for the AIs to discuss..."></textarea>
+            </div>
+
+            <div class="flex flex-col">
+                <label class="text-[11px] font-headline text-on-surface-variant tracking-widest uppercase font-medium mb-2 pl-1">Participating Models (Select 2+)</label>
+                <div id="ma-models-container" class="grid grid-cols-2 gap-2 p-4 bg-surface-container-low rounded-lg">
+                    <div class="text-sm text-on-surface-variant">Loading models...</div>
+                </div>
+            </div>
+
+            <div class="flex flex-col">
+                <label class="text-[11px] font-headline text-on-surface-variant tracking-widest uppercase font-medium mb-2 pl-1">Conversation Mode</label>
+                <select id="ma-mode" class="w-full bg-surface-container-low border-0 border-b-2 border-outline-variant focus:border-tertiary focus:ring-0 text-on-surface pl-4 pr-4 py-3 text-sm transition-all outline-none rounded-t-lg shadow-inner">
+                    <option value="sequential">Sequential (LLMs talk to each other)</option>
+                    <option value="parallel">Parallel (All answer each round)</option>
+                </select>
+                <p class="text-xs text-on-surface-variant mt-2 pl-1" id="ma-mode-description">
+                    Models take turns responding to each other in sequence
+                </p>
+            </div>
+
+            <div class="flex flex-col">
+                <label class="text-[11px] font-headline text-on-surface-variant tracking-widest uppercase font-medium mb-2 pl-1">Max Turns</label>
+                <input id="ma-rounds" type="number" min="1" max="30" value="9" class="w-full bg-surface-container-low border-0 border-b-2 border-outline-variant focus:border-tertiary focus:ring-0 text-on-surface pl-4 pr-4 py-3 text-sm transition-all outline-none rounded-t-lg shadow-inner"/>
+                <p class="text-xs text-on-surface-variant mt-2 pl-1">Total number of turns in the conversation (1-30)</p>
+            </div>
+
+            <div id="ma-error" class="hidden text-error text-sm border border-error/40 bg-error/10 rounded-lg px-3 py-2"></div>
+        </form>
+        <div class="px-8 py-6 bg-surface-container-low/50 border-t border-outline-variant/10 flex items-center justify-end gap-4 rounded-b-[20px]">
+            <button id="close-multi-agent-2" class="px-6 py-3 rounded-xl text-sm font-headline font-semibold text-on-surface-variant bg-surface-container-highest border border-outline-variant/30 hover:text-on-surface hover:bg-surface-bright hover:border-outline-variant/50 transition-all">Cancel</button>
+            <button id="start-multi-agent-btn" class="px-8 py-3 rounded-xl text-sm font-headline font-bold text-on-primary-fixed bg-gradient-to-br from-tertiary to-tertiary-container hover:brightness-110 active:scale-[0.98] transition-all shadow-[0_0_24px_rgba(172,138,255,0.15)]">Start Discussion</button>
+        </div>
+    </div>
+</div>
+
+<!-- Multi-Agent Session View Modal -->
+<div id="multi-agent-view-modal" class="modal">
+    <div class="w-full max-w-[900px] max-h-[90vh] bg-surface-container-highest rounded-[20px] shadow-[0_24px_80px_-12px_rgba(0,0,0,0.8),0_0_0_1px_rgba(64,72,93,0.2),0_0_32px_rgba(133,173,255,0.04)] relative overflow-hidden flex flex-col transform transition-all scale-100">
+        <div class="absolute top-0 left-0 w-full h-[2px] bg-gradient-to-r from-transparent via-tertiary to-transparent opacity-60"></div>
+        <div class="px-8 pt-10 pb-6 border-b border-outline-variant/10">
+            <div class="flex items-center gap-3 mb-2">
+                <div class="w-8 h-8 rounded-lg bg-surface-bright flex items-center justify-center text-tertiary shadow-[0_0_12px_rgba(172,138,255,0.15)]">
+                    <span class="material-symbols-outlined text-[18px]">groups</span>
+                </div>
+                <div class="flex-1">
+                    <h2 id="ma-view-title" class="font-headline text-2xl font-bold tracking-tight text-on-surface">Discussion Session</h2>
+                    <p id="ma-view-status" class="text-xs text-on-surface-variant mt-1"></p>
+                </div>
+            </div>
+            <button class="absolute top-4 right-4 text-2xl text-on-surface-variant hover:text-on-surface" id="close-multi-agent-view">&times;</button>
+        </div>
+        <div class="px-8 py-6 bg-surface-container-low border-b border-outline-variant/10">
+            <div class="text-[11px] font-headline text-on-surface-variant tracking-widest uppercase font-medium mb-2">Problem Statement</div>
+            <p id="ma-view-problem" class="text-sm text-on-surface leading-relaxed"></p>
+        </div>
+        <div id="ma-view-discussion" class="flex-1 overflow-y-auto px-8 py-6 space-y-6">
+            <div class="text-sm text-on-surface-variant">Loading discussion...</div>
+        </div>
+        <div class="px-8 py-4 bg-surface-container-low/50 border-t border-outline-variant/10 flex items-center justify-between gap-4 rounded-b-[20px]">
+            <button id="ma-continue-btn" class="px-6 py-3 rounded-xl text-sm font-headline font-semibold text-on-surface bg-surface-container-highest border border-outline-variant/30 hover:bg-surface-bright hover:border-outline-variant/50 transition-all">Continue Discussion</button>
+            <div class="flex gap-3">
+                <button id="ma-synthesize-btn" class="px-6 py-3 rounded-xl text-sm font-headline font-semibold text-tertiary bg-surface-container-highest border border-tertiary/30 hover:bg-surface-bright hover:border-tertiary/50 transition-all">Synthesize</button>
+                <button id="ma-stop-btn" class="px-6 py-3 rounded-xl text-sm font-headline font-semibold text-error bg-surface-container-highest border border-error/30 hover:bg-surface-bright hover:border-error/50 transition-all">Stop Session</button>
+            </div>
+        </div>
+    </div>
+</div>
+
 <script src="{{ url_for('static', filename='canvas.js') }}"></script>
 <script src="{{ url_for('static', filename='app.js') }}"></script>
+<script src="{{ url_for('static', filename='multi_agent.js') }}"></script>
 </body>
 </html>

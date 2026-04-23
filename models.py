@@ -1,7 +1,7 @@
 from datetime import datetime
 from sqlalchemy import (
     create_engine, Column, Integer, String, Text, DateTime,
-    ForeignKey, UniqueConstraint,
+    ForeignKey, UniqueConstraint, Float, JSON,
 )
 from sqlalchemy.orm import declarative_base, relationship, Session
 from werkzeug.security import generate_password_hash, check_password_hash
@@ -147,6 +147,98 @@ class Message(Base):
 
     def __repr__(self):
         return f"<Message(id={self.id}, role='{self.role}', parent_id={self.parent_id})>"
+
+
+class MultiAgentSession(Base):
+    """Represents a multi-agent discussion session where multiple LLMs collaborate"""
+    __tablename__ = 'multi_agent_sessions'
+
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey('users.id', ondelete='CASCADE'), nullable=False)
+    title = Column(String(200), nullable=False)
+    initial_problem = Column(Text, nullable=False)
+    participating_models = Column(JSON, nullable=False)  # List of model names
+    model_roles = Column(JSON, nullable=True)  # Dict mapping model to role
+    max_rounds = Column(Integer, nullable=False, default=3)
+    current_round = Column(Integer, nullable=False, default=0)
+    conversation_mode = Column(String(20), nullable=False, default='sequential')  # sequential or parallel
+    status = Column(String(20), nullable=False, default='active')  # active, completed, stopped
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    completed_at = Column(DateTime, nullable=True)
+
+    user = relationship('User')
+    turns = relationship(
+        'MultiAgentTurn', back_populates='session',
+        cascade='all, delete-orphan',
+        order_by='MultiAgentTurn.turn_number, MultiAgentTurn.created_at'
+    )
+
+    def to_dict(self, include_turns=False):
+        result = {
+            'id': self.id,
+            'user_id': self.user_id,
+            'title': self.title,
+            'initial_problem': self.initial_problem,
+            'participating_models': self.participating_models,
+            'model_roles': self.model_roles,
+            'max_rounds': self.max_rounds,
+            'current_round': self.current_round,
+            'conversation_mode': self.conversation_mode,
+            'status': self.status,
+            'created_at': self.created_at.isoformat() if self.created_at else None,
+            'completed_at': self.completed_at.isoformat() if self.completed_at else None,
+        }
+        if include_turns:
+            result['turns'] = [turn.to_dict() for turn in self.turns]
+            result['turns_by_round'] = self._group_turns_by_round()
+        return result
+
+    def _group_turns_by_round(self):
+        """Group turns by round/turn number for easier display"""
+        rounds = {}
+        for turn in self.turns:
+            turn_num = turn.turn_number
+            if turn_num not in rounds:
+                rounds[turn_num] = []
+            rounds[turn_num].append(turn.to_dict())
+        return rounds
+
+    def __repr__(self):
+        return f"<MultiAgentSession(id={self.id}, title='{self.title}', status='{self.status}')>"
+
+
+class MultiAgentTurn(Base):
+    """Represents a single turn/response in a multi-agent discussion"""
+    __tablename__ = 'multi_agent_turns'
+
+    id = Column(Integer, primary_key=True)
+    session_id = Column(Integer, ForeignKey('multi_agent_sessions.id', ondelete='CASCADE'), nullable=False)
+    turn_number = Column(Integer, nullable=False)  # Sequential turn or round number
+    model_name = Column(String(100), nullable=False)
+    model_role = Column(String(200), nullable=True)
+    content = Column(Text, nullable=False)
+    duration = Column(Float, nullable=True)  # Time taken for LLM response
+    error = Column(Text, nullable=True)  # Error message if failed
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    session = relationship('MultiAgentSession', back_populates='turns')
+
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'session_id': self.session_id,
+            'turn_number': self.turn_number,
+            'round_number': self.turn_number,  # Alias for backwards compatibility
+            'model_name': self.model_name,
+            'model_role': self.model_role,
+            'content': self.content,
+            'duration': self.duration,
+            'error': self.error,
+            'created_at': self.created_at.isoformat() if self.created_at else None,
+        }
+
+    def __repr__(self):
+        return f"<MultiAgentTurn(id={self.id}, turn={self.turn_number}, model='{self.model_name}')>"
 
 
 engine = create_engine(Config.SQLALCHEMY_DATABASE_URI)

@@ -14,6 +14,7 @@ setup_logging()
 from models import (
     init_db, get_session, create_user, get_user_api_keys,
     Settings, Conversation, Message, User,
+    MultiAgentSession, MultiAgentTurn,
     SETTINGS_KEYS, VALID_ROLES, ROLE_USER,
 )
 from config import Config
@@ -32,6 +33,9 @@ init_db()
 logger.info("Database initialized at %s", Config.SQLALCHEMY_DATABASE_URI)
 
 from llm_service import llm_service
+from multi_agent_service import MultiAgentService
+
+multi_agent_service = MultiAgentService(llm_service)
 
 
 @app.before_request
@@ -477,6 +481,452 @@ def create_message():
     except Exception as e:
         db.rollback()
         logger.exception("create_message failed user_id=%s conv_id=%s", user.id, conversation_id)
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+    finally:
+        db.close()
+
+
+# ==================== Multi-Agent Conversation Endpoints ====================
+
+@app.route('/api/multi-agent/sessions', methods=['GET'])
+@login_required
+def get_multi_agent_sessions():
+    """List all multi-agent sessions for the current user."""
+    user = _current_user()
+    db = get_session()
+    try:
+        sessions = (
+            db.query(MultiAgentSession)
+            .filter_by(user_id=user.id)
+            .order_by(MultiAgentSession.created_at.desc())
+            .all()
+        )
+        result = [session.to_dict(include_turns=False) for session in sessions]
+        return jsonify(result)
+    finally:
+        db.close()
+
+
+@app.route('/api/multi-agent/sessions', methods=['POST'])
+@login_required
+def create_multi_agent_session():
+    """Create a new multi-agent discussion session."""
+    user = _current_user()
+    data = request.json or {}
+
+    title = data.get('title', f'Multi-Agent Discussion {datetime.now().strftime("%Y-%m-%d %H:%M")}')
+    initial_problem = data.get('initial_problem', '').strip()
+    participating_models = data.get('participating_models', [])
+    model_roles = data.get('model_roles')  # Optional dict
+    max_rounds = data.get('max_rounds', 3)
+    conversation_mode = data.get('conversation_mode', 'sequential')  # sequential or parallel
+    auto_start = data.get('auto_start', True)
+
+    if not initial_problem:
+        return jsonify({'status': 'error', 'message': 'initial_problem is required'}), 400
+    if not participating_models or len(participating_models) < 2:
+        return jsonify({'status': 'error', 'message': 'At least 2 models required'}), 400
+    if max_rounds < 1 or max_rounds > 30:
+        return jsonify({'status': 'error', 'message': 'max_rounds must be between 1 and 30'}), 400
+    if conversation_mode not in ['sequential', 'parallel']:
+        return jsonify({'status': 'error', 'message': 'conversation_mode must be sequential or parallel'}), 400
+
+    db = get_session()
+    try:
+        # Create the session
+        session_obj = MultiAgentSession(
+            user_id=user.id,
+            title=title,
+            initial_problem=initial_problem,
+            participating_models=participating_models,
+            model_roles=model_roles,
+            max_rounds=max_rounds,
+            conversation_mode=conversation_mode,
+            status='active',
+        )
+        db.add(session_obj)
+        db.commit()
+
+        logger.info(
+            "Multi-agent session created: session_id=%s user_id=%s models=%s rounds=%d mode=%s",
+            session_obj.id, user.id, participating_models, max_rounds, conversation_mode,
+        )
+
+        # Optionally run the first turn/round immediately
+        if auto_start:
+            user_keys = get_user_api_keys(db, user.id)
+
+            if conversation_mode == 'sequential':
+                # Run sequential conversation
+                # For auto_start, we'll just run the first turn
+                result = multi_agent_service.run_sequential_conversation(
+                    initial_problem=initial_problem,
+                    participating_models=participating_models,
+                    total_turns=1,  # Just first turn for auto_start
+                    user_keys=user_keys,
+                    model_roles=model_roles,
+                )
+
+                # Save turns
+                for turn in result['turns']:
+                    turn_obj = MultiAgentTurn(
+                        session_id=session_obj.id,
+                        turn_number=turn['turn_number'],
+                        model_name=turn['model_name'],
+                        model_role=turn.get('role'),
+                        content=turn['content'],
+                        duration=turn.get('duration'),
+                    )
+                    db.add(turn_obj)
+
+                # Save errors
+                for error in result.get('errors', []):
+                    turn_obj = MultiAgentTurn(
+                        session_id=session_obj.id,
+                        turn_number=error['turn_number'],
+                        model_name=error['model_name'],
+                        content='',
+                        error=error['error'],
+                    )
+                    db.add(turn_obj)
+
+                session_obj.current_round = 1
+
+            else:  # parallel mode
+                round_result = multi_agent_service.run_discussion_round(
+                    initial_problem=initial_problem,
+                    participating_models=participating_models,
+                    discussion_history=[],
+                    round_number=1,
+                    user_keys=user_keys,
+                    model_roles=model_roles,
+                )
+
+                # Save the round results
+                for response in round_result['responses']:
+                    turn = MultiAgentTurn(
+                        session_id=session_obj.id,
+                        turn_number=response['round_number'],
+                        model_name=response['model_name'],
+                        model_role=response.get('role'),
+                        content=response['content'],
+                        duration=response.get('duration'),
+                    )
+                    db.add(turn)
+
+                # Save errors as turns with error field populated
+                for error in round_result['errors']:
+                    turn = MultiAgentTurn(
+                        session_id=session_obj.id,
+                        turn_number=error['round_number'],
+                        model_name=error['model_name'],
+                        content='',
+                        error=error['error'],
+                    )
+                    db.add(turn)
+
+                session_obj.current_round = 1
+
+            db.commit()
+
+            logger.info(
+                "Multi-agent session started: session_id=%s mode=%s",
+                session_obj.id, conversation_mode,
+            )
+
+        return jsonify({
+            'status': 'success',
+            'session': session_obj.to_dict(include_turns=True),
+        }), 201
+
+    except Exception as e:
+        db.rollback()
+        logger.exception("Multi-agent session creation failed: user_id=%s", user.id)
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+    finally:
+        db.close()
+
+
+@app.route('/api/multi-agent/sessions/<int:session_id>', methods=['GET'])
+@login_required
+def get_multi_agent_session(session_id):
+    """Get a specific multi-agent session with all turns."""
+    user = _current_user()
+    db = get_session()
+    try:
+        session_obj = db.query(MultiAgentSession).filter_by(id=session_id, user_id=user.id).first()
+        if not session_obj:
+            return jsonify({'status': 'error', 'message': 'Session not found'}), 404
+
+        return jsonify(session_obj.to_dict(include_turns=True))
+    finally:
+        db.close()
+
+
+@app.route('/api/multi-agent/sessions/<int:session_id>/continue', methods=['POST'])
+@login_required
+def continue_multi_agent_session(session_id):
+    """Continue a multi-agent session by running the next round."""
+    user = _current_user()
+    db = get_session()
+    try:
+        session_obj = db.query(MultiAgentSession).filter_by(id=session_id, user_id=user.id).first()
+        if not session_obj:
+            return jsonify({'status': 'error', 'message': 'Session not found'}), 404
+
+        if session_obj.status != 'active':
+            return jsonify({'status': 'error', 'message': f'Session is {session_obj.status}'}), 400
+
+        if session_obj.current_round >= session_obj.max_rounds:
+            session_obj.status = 'completed'
+            session_obj.completed_at = datetime.utcnow()
+            db.commit()
+            return jsonify({
+                'status': 'error',
+                'message': 'Session has reached max rounds',
+                'session': session_obj.to_dict(include_turns=True),
+            }), 400
+
+        # Get discussion history
+        discussion_history = [turn.to_dict() for turn in session_obj.turns if not turn.error]
+
+        # Run the next turn/round
+        next_turn_num = session_obj.current_round + 1
+        user_keys = get_user_api_keys(db, user.id)
+
+        if session_obj.conversation_mode == 'sequential':
+            # Sequential: Determine which model's turn it is
+            # Models rotate in order
+            model_index = (next_turn_num - 1) % len(session_obj.participating_models)
+            current_model = session_obj.participating_models[model_index]
+            role = session_obj.model_roles.get(current_model) if session_obj.model_roles else None
+
+            # Create conversation prompt
+            prompt = multi_agent_service.create_conversation_prompt(
+                initial_problem=session_obj.initial_problem,
+                conversation_history=discussion_history,
+                current_model=current_model,
+                role=role
+            )
+
+            messages = [{"role": "user", "content": prompt}]
+
+            # Call the LLM
+            try:
+                from datetime import datetime as dt
+                start_time = dt.now()
+                response_content = multi_agent_service.llm_service.call_llm(
+                    messages=messages,
+                    target_model=current_model,
+                    user_keys=user_keys
+                )
+                duration = (dt.now() - start_time).total_seconds()
+
+                turn_obj = MultiAgentTurn(
+                    session_id=session_obj.id,
+                    turn_number=next_turn_num,
+                    model_name=current_model,
+                    model_role=role,
+                    content=response_content,
+                    duration=duration,
+                )
+                db.add(turn_obj)
+
+                result = {
+                    'turns': [{
+                        'turn_number': next_turn_num,
+                        'model_name': current_model,
+                        'content': response_content,
+                        'role': role,
+                        'duration': duration
+                    }],
+                    'errors': []
+                }
+
+            except Exception as e:
+                turn_obj = MultiAgentTurn(
+                    session_id=session_obj.id,
+                    turn_number=next_turn_num,
+                    model_name=current_model,
+                    content='',
+                    error=str(e),
+                )
+                db.add(turn_obj)
+
+                result = {
+                    'turns': [],
+                    'errors': [{
+                        'turn_number': next_turn_num,
+                        'model_name': current_model,
+                        'error': str(e)
+                    }]
+                }
+
+            result_key = 'turn'
+
+        else:  # parallel mode
+            result = multi_agent_service.run_discussion_round(
+                initial_problem=session_obj.initial_problem,
+                participating_models=session_obj.participating_models,
+                discussion_history=discussion_history,
+                round_number=next_turn_num,
+                user_keys=user_keys,
+                model_roles=session_obj.model_roles,
+            )
+
+            # Save the round results
+            for response in result['responses']:
+                turn = MultiAgentTurn(
+                    session_id=session_obj.id,
+                    turn_number=response['round_number'],
+                    model_name=response['model_name'],
+                    model_role=response.get('role'),
+                    content=response['content'],
+                    duration=response.get('duration'),
+                )
+                db.add(turn)
+
+            for error in result['errors']:
+                turn = MultiAgentTurn(
+                    session_id=session_obj.id,
+                    turn_number=error['round_number'],
+                    model_name=error['model_name'],
+                    content='',
+                    error=error['error'],
+                )
+                db.add(turn)
+
+            result_key = 'round'
+
+        session_obj.current_round = next_turn_num
+
+        # Check if this was the last turn
+        if next_turn_num >= session_obj.max_rounds:
+            session_obj.status = 'completed'
+            session_obj.completed_at = datetime.utcnow()
+
+        db.commit()
+
+        logger.info(
+            "Multi-agent session turn %d completed: session_id=%s mode=%s",
+            next_turn_num, session_obj.id, session_obj.conversation_mode,
+        )
+
+        return jsonify({
+            'status': 'success',
+            result_key: result,
+            'session': session_obj.to_dict(include_turns=True),
+        })
+
+    except Exception as e:
+        db.rollback()
+        logger.exception("Multi-agent session continue failed: session_id=%s", session_id)
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+    finally:
+        db.close()
+
+
+@app.route('/api/multi-agent/sessions/<int:session_id>/stop', methods=['POST'])
+@login_required
+def stop_multi_agent_session(session_id):
+    """Stop a multi-agent session early."""
+    user = _current_user()
+    db = get_session()
+    try:
+        session_obj = db.query(MultiAgentSession).filter_by(id=session_id, user_id=user.id).first()
+        if not session_obj:
+            return jsonify({'status': 'error', 'message': 'Session not found'}), 404
+
+        if session_obj.status != 'active':
+            return jsonify({'status': 'error', 'message': f'Session is already {session_obj.status}'}), 400
+
+        session_obj.status = 'stopped'
+        session_obj.completed_at = datetime.utcnow()
+        db.commit()
+
+        logger.info("Multi-agent session stopped: session_id=%s user_id=%s", session_id, user.id)
+
+        return jsonify({
+            'status': 'success',
+            'message': 'Session stopped',
+            'session': session_obj.to_dict(include_turns=True),
+        })
+
+    except Exception as e:
+        db.rollback()
+        logger.exception("Multi-agent session stop failed: session_id=%s", session_id)
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+    finally:
+        db.close()
+
+
+@app.route('/api/multi-agent/sessions/<int:session_id>/synthesize', methods=['POST'])
+@login_required
+def synthesize_multi_agent_session(session_id):
+    """Synthesize a multi-agent discussion using a specified model."""
+    user = _current_user()
+    data = request.json or {}
+    synthesis_model = data.get('synthesis_model', 'gpt-4o')
+
+    db = get_session()
+    try:
+        session_obj = db.query(MultiAgentSession).filter_by(id=session_id, user_id=user.id).first()
+        if not session_obj:
+            return jsonify({'status': 'error', 'message': 'Session not found'}), 404
+
+        # Get discussion history (exclude errors)
+        discussion_history = [turn.to_dict() for turn in session_obj.turns if not turn.error]
+
+        if not discussion_history:
+            return jsonify({'status': 'error', 'message': 'No discussion to synthesize'}), 400
+
+        user_keys = get_user_api_keys(db, user.id)
+
+        synthesis_result = multi_agent_service.synthesize_discussion(
+            initial_problem=session_obj.initial_problem,
+            discussion_history=discussion_history,
+            synthesis_model=synthesis_model,
+            user_keys=user_keys,
+        )
+
+        logger.info(
+            "Multi-agent session synthesized: session_id=%s synthesis_model=%s",
+            session_id, synthesis_model,
+        )
+
+        return jsonify({
+            'status': 'success',
+            'synthesis': synthesis_result,
+        })
+
+    except Exception as e:
+        logger.exception("Multi-agent session synthesis failed: session_id=%s", session_id)
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+    finally:
+        db.close()
+
+
+@app.route('/api/multi-agent/sessions/<int:session_id>', methods=['DELETE'])
+@login_required
+def delete_multi_agent_session(session_id):
+    """Delete a multi-agent session."""
+    user = _current_user()
+    db = get_session()
+    try:
+        session_obj = db.query(MultiAgentSession).filter_by(id=session_id, user_id=user.id).first()
+        if not session_obj:
+            return jsonify({'status': 'error', 'message': 'Session not found'}), 404
+
+        db.delete(session_obj)
+        db.commit()
+
+        logger.info("Multi-agent session deleted: session_id=%s user_id=%s", session_id, user.id)
+
+        return jsonify({'status': 'success', 'message': 'Session deleted'})
+
+    except Exception as e:
+        db.rollback()
+        logger.exception("Multi-agent session delete failed: session_id=%s", session_id)
         return jsonify({'status': 'error', 'message': str(e)}), 500
     finally:
         db.close()
