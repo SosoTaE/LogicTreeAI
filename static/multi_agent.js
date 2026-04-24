@@ -357,6 +357,9 @@ async function viewMultiAgentSession(sessionId) {
             }
         }
 
+        // Populate synthesis model dropdown
+        populateSynthesisModelSelector();
+
         // Show modal
         document.getElementById('multi-agent-view-modal').classList.add('active');
 
@@ -382,7 +385,7 @@ function renderMultiAgentDiscussion(session) {
 
     if (session.conversation_mode === 'sequential') {
         // Sequential mode: show turns in chronological order
-        container.innerHTML = session.turns.map((turn) => {
+        let turnsHtml = session.turns.map((turn) => {
             const isUser = (turn.model_name || '').toLowerCase() === 'user';
 
             if (turn.error) {
@@ -427,6 +430,28 @@ function renderMultiAgentDiscussion(session) {
                 </div>
             `;
         }).join('');
+
+        // Add synthesis section if available
+        if (session.synthesis) {
+            turnsHtml += `
+                <div class="border-2 border-tertiary/40 rounded-lg overflow-hidden bg-tertiary/5 mt-6">
+                    <div class="bg-gradient-to-r from-tertiary/20 to-tertiary/10 px-4 py-3 border-b border-tertiary/30">
+                        <div class="flex items-center gap-2">
+                            <span class="material-symbols-outlined text-[16px] text-tertiary">auto_awesome</span>
+                            <div class="font-headline font-bold text-sm text-tertiary">Synthesis</div>
+                            ${session.synthesis_model ? `<span class="text-xs text-on-surface-variant">by ${escapeHtml(session.synthesis_model)}</span>` : ''}
+                        </div>
+                    </div>
+                    <div class="p-4">
+                        <div class="text-sm text-on-surface leading-relaxed prose prose-invert max-w-none">
+                            ${marked.parse(session.synthesis)}
+                        </div>
+                    </div>
+                </div>
+            `;
+        }
+
+        container.innerHTML = turnsHtml;
     } else {
         // Parallel mode: group by rounds
         if (!session.turns_by_round || Object.keys(session.turns_by_round).length === 0) {
@@ -466,6 +491,26 @@ function renderMultiAgentDiscussion(session) {
                 </div>
             </div>
         `).join('');
+    }
+
+    // Add synthesis section if available
+    if (session.synthesis) {
+        container.innerHTML += `
+            <div class="border-2 border-tertiary/40 rounded-lg overflow-hidden bg-tertiary/5 mt-6">
+                <div class="bg-gradient-to-r from-tertiary/20 to-tertiary/10 px-4 py-3 border-b border-tertiary/30">
+                    <div class="flex items-center gap-2">
+                        <span class="material-symbols-outlined text-[16px] text-tertiary">auto_awesome</span>
+                        <div class="font-headline font-bold text-sm text-tertiary">Synthesis</div>
+                        ${session.synthesis_model ? `<span class="text-xs text-on-surface-variant">by ${escapeHtml(session.synthesis_model)}</span>` : ''}
+                    </div>
+                </div>
+                <div class="p-4">
+                    <div class="text-sm text-on-surface leading-relaxed prose prose-invert max-w-none">
+                        ${marked.parse(session.synthesis)}
+                    </div>
+                </div>
+            </div>
+        `;
     }
 }
 
@@ -581,20 +626,53 @@ async function stopMultiAgentSession() {
     }
 }
 
+// Populate synthesis model selector
+function populateSynthesisModelSelector() {
+    const selector = document.getElementById('ma-synthesis-model');
+    if (!selector || !multiAgentState.availableModels) return;
+
+    // Clear existing options except the placeholder
+    selector.innerHTML = '<option value="">Select synthesis model...</option>';
+
+    // Add all available models
+    multiAgentState.availableModels.forEach(model => {
+        const option = document.createElement('option');
+        option.value = model.name;
+        option.textContent = model.name;
+
+        // Pre-select a good default model for synthesis
+        if (model.name.includes('gpt-4o') || model.name.includes('claude-3-7-sonnet') || model.name.includes('claude-sonnet-4')) {
+            option.selected = true;
+        }
+
+        selector.appendChild(option);
+    });
+
+    // If no default was selected, select the first available model
+    if (selector.selectedIndex === 0 && multiAgentState.availableModels.length > 0) {
+        selector.selectedIndex = 1;
+    }
+}
+
 // Synthesize multi-agent discussion
 async function synthesizeMultiAgentSession() {
     if (!multiAgentState.currentSession) return;
 
     const sessionId = multiAgentState.currentSession.id;
     const synthesizeBtn = document.getElementById('ma-synthesize-btn');
+    const modelSelector = document.getElementById('ma-synthesis-model');
     const originalText = synthesizeBtn.textContent;
 
-    // Ask for synthesis model
-    const synthesisModel = prompt('Enter the model to use for synthesis (e.g., gpt-4o, claude-3-7-sonnet):', 'gpt-4o');
-    if (!synthesisModel) return;
+    // Get selected model from dropdown
+    const synthesisModel = modelSelector.value;
+    if (!synthesisModel) {
+        alert('Please select a model for synthesis');
+        return;
+    }
 
     synthesizeBtn.textContent = 'Synthesizing...';
     synthesizeBtn.disabled = true;
+    modelSelector.disabled = true;
 
     try {
         const response = await fetch(`/api/multi-agent/sessions/${sessionId}/synthesize`, {
@@ -615,12 +693,54 @@ async function synthesizeMultiAgentSession() {
         const synthesis = data.synthesis.synthesis || data.synthesis.error;
         alert('Synthesis:\n\n' + synthesis);
 
+        // Refresh the session to show updated synthesis
+        await viewMultiAgentSession(sessionId);
+
     } catch (error) {
         console.error('Error synthesizing session:', error);
         alert('Error synthesizing session: ' + error.message);
     } finally {
         synthesizeBtn.textContent = originalText;
         synthesizeBtn.disabled = false;
+        modelSelector.disabled = false;
+    }
+}
+
+// Delete multi-agent session
+async function deleteMultiAgentSession() {
+    if (!multiAgentState.currentSession) return;
+
+    const sessionId = multiAgentState.currentSession.id;
+    const sessionTitle = multiAgentState.currentSession.title;
+
+    // Confirm deletion
+    if (!confirm(`Are you sure you want to delete the session "${sessionTitle}"?\n\nThis action cannot be undone.`)) {
+        return;
+    }
+
+    try {
+        const response = await fetch(`/api/multi-agent/sessions/${sessionId}`, {
+            method: 'DELETE',
+            credentials: 'include'
+        });
+
+        if (!response.ok) {
+            const data = await response.json();
+            throw new Error(data.message || 'Failed to delete session');
+        }
+
+        // Close the view modal
+        document.getElementById('multi-agent-view-modal').classList.remove('active');
+
+        // Reload sessions list
+        await loadMultiAgentSessions();
+
+        // Clear current session
+        multiAgentState.currentSession = null;
+
+    } catch (error) {
+        console.error('Error deleting session:', error);
+        alert('Error deleting session: ' + error.message);
     }
 }
 
@@ -680,6 +800,11 @@ document.addEventListener('DOMContentLoaded', function() {
     const synthesizeBtn = document.getElementById('ma-synthesize-btn');
     if (synthesizeBtn) {
         synthesizeBtn.addEventListener('click', synthesizeMultiAgentSession);
+    }
+
+    const deleteBtn = document.getElementById('ma-delete-btn');
+    if (deleteBtn) {
+        deleteBtn.addEventListener('click', deleteMultiAgentSession);
     }
 
     const exportDocxBtn = document.getElementById('ma-export-docx-btn');

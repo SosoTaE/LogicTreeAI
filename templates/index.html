@@ -166,10 +166,6 @@
 <span class="material-symbols-outlined">schema</span>
 <span class="text-[10px] uppercase tracking-wider mt-1">Canvas</span>
 </button>
-<button class="w-full py-3 flex flex-col items-center gap-1 text-[#40485d] hover:text-[#85adff] transition-colors duration-300 scale-95 active:scale-90 transition-transform">
-<span class="material-symbols-outlined">account_tree</span>
-<span class="text-[10px] uppercase tracking-wider mt-1">Nodes</span>
-</button>
 <button id="history-sidebar-btn" class="w-full py-3 flex flex-col items-center gap-1 text-[#40485d] hover:text-[#85adff] transition-colors duration-300 scale-95 active:scale-90 transition-transform" onclick="document.getElementById('history-panel').classList.toggle('hidden')">
 <span class="material-symbols-outlined">history</span>
 <span class="text-[10px] uppercase tracking-wider mt-1">History</span>
@@ -220,9 +216,8 @@
 <span class="font-space-grotesk font-black text-[#85adff] text-2xl tracking-tight normal-case">LogicTree AI</span>
 <span id="chat-title" class="ml-2 font-mono text-sm text-on-surface-variant tracking-normal normal-case border-l border-outline-variant/30 pl-4 hidden md:inline-block">Select or create a conversation</span>
 <nav class="hidden lg:flex items-center gap-6 h-full">
-<a class="text-[#85adff] border-b-2 border-[#85adff] pb-1 h-16 flex items-center pt-1 scale-98 transition-all duration-200" href="#">Models</a>
-<a class="text-[#dee5ff]/60 hover:bg-[#1f2b49]/40 hover:text-[#53ddfc] h-16 flex items-center px-2 scale-98 transition-all duration-200" href="#">API Keys</a>
-<a class="text-[#dee5ff]/60 hover:bg-[#1f2b49]/40 hover:text-[#53ddfc] h-16 flex items-center px-2 scale-98 transition-all duration-200" href="#">Logs</a>
+<a id="models-nav-link" class="nav-link text-[#85adff] border-b-2 border-[#85adff] pb-1 h-16 flex items-center pt-1 scale-98 transition-all duration-200 cursor-pointer" href="#">Models</a>
+<a id="logs-nav-link" class="nav-link text-[#dee5ff]/60 hover:bg-[#1f2b49]/40 hover:text-[#53ddfc] h-16 flex items-center px-2 scale-98 transition-all duration-200 cursor-pointer" href="#">Logs</a>
 </nav>
 </div>
 <div class="flex items-center gap-6">
@@ -495,7 +490,7 @@
 
 <!-- Multi-Agent Session View Modal -->
 <div id="multi-agent-view-modal" class="modal">
-    <div class="w-full max-w-[900px] max-h-[90vh] bg-surface-container-highest rounded-[20px] shadow-[0_24px_80px_-12px_rgba(0,0,0,0.8),0_0_0_1px_rgba(64,72,93,0.2),0_0_32px_rgba(133,173,255,0.04)] relative overflow-hidden flex flex-col transform transition-all scale-100">
+    <div class="w-full max-w-[1400px] max-h-[95vh] bg-surface-container-highest rounded-[20px] shadow-[0_24px_80px_-12px_rgba(0,0,0,0.8),0_0_0_1px_rgba(64,72,93,0.2),0_0_32px_rgba(133,173,255,0.04)] relative overflow-hidden flex flex-col transform transition-all scale-100">
         <div class="absolute top-0 left-0 w-full h-[2px] bg-gradient-to-r from-transparent via-tertiary to-transparent opacity-60"></div>
         <div class="px-8 pt-10 pb-6 border-b border-outline-variant/10">
             <div class="flex items-center gap-3 mb-2">
@@ -527,8 +522,14 @@
             <p class="text-[11px] text-on-surface-variant mt-2">Your message is inserted into the conversation, then the next AI in the rotation replies to it.</p>
         </div>
         <div class="px-8 py-4 bg-surface-container-low/50 border-t border-outline-variant/10 flex items-center justify-between gap-4 rounded-b-[20px]">
-            <button id="ma-continue-btn" class="px-6 py-3 rounded-xl text-sm font-headline font-semibold text-on-surface bg-surface-container-highest border border-outline-variant/30 hover:bg-surface-bright hover:border-outline-variant/50 transition-all">Continue Discussion</button>
-            <div class="flex gap-3">
+            <div class="flex gap-3 items-center">
+                <button id="ma-continue-btn" class="px-6 py-3 rounded-xl text-sm font-headline font-semibold text-on-surface bg-surface-container-highest border border-outline-variant/30 hover:bg-surface-bright hover:border-outline-variant/50 transition-all">Continue Discussion</button>
+                <button id="ma-delete-btn" class="px-6 py-3 rounded-xl text-sm font-headline font-semibold text-error bg-surface-container-highest border border-error/30 hover:bg-surface-bright hover:border-error/50 transition-all inline-flex items-center gap-1.5">
+                    <span class="material-symbols-outlined text-[16px]">delete</span>
+                    Delete
+                </button>
+            </div>
+            <div class="flex gap-3 items-center">
                 <button id="ma-export-docx-btn" class="px-4 py-3 rounded-xl text-sm font-headline font-semibold text-on-surface bg-surface-container-highest border border-outline-variant/30 hover:bg-surface-bright hover:border-outline-variant/50 transition-all inline-flex items-center gap-1.5">
                     <span class="material-symbols-outlined text-[16px]">description</span>
                     Word
@@ -537,9 +538,45 @@
                     <span class="material-symbols-outlined text-[16px]">picture_as_pdf</span>
                     PDF
                 </button>
-                <button id="ma-synthesize-btn" class="px-6 py-3 rounded-xl text-sm font-headline font-semibold text-tertiary bg-surface-container-highest border border-tertiary/30 hover:bg-surface-bright hover:border-tertiary/50 transition-all">Synthesize</button>
+                <div class="flex items-center gap-2">
+                    <select id="ma-synthesis-model" class="px-3 py-2.5 rounded-xl text-xs font-headline bg-surface-container-highest border border-tertiary/30 text-on-surface focus:border-tertiary focus:ring-0 transition-all outline-none">
+                        <option value="">Select synthesis model...</option>
+                    </select>
+                    <button id="ma-synthesize-btn" class="px-6 py-3 rounded-xl text-sm font-headline font-semibold text-tertiary bg-surface-container-highest border border-tertiary/30 hover:bg-surface-bright hover:border-tertiary/50 transition-all">Synthesize</button>
+                </div>
                 <button id="ma-stop-btn" class="px-6 py-3 rounded-xl text-sm font-headline font-semibold text-error bg-surface-container-highest border border-error/30 hover:bg-surface-bright hover:border-error/50 transition-all">Stop Session</button>
             </div>
+        </div>
+    </div>
+</div>
+
+<!-- Logs Modal -->
+<div id="logs-modal" class="modal">
+    <div class="w-full max-w-[1200px] max-h-[90vh] bg-surface-container-highest rounded-[20px] shadow-[0_24px_80px_-12px_rgba(0,0,0,0.8),0_0_0_1px_rgba(64,72,93,0.2),0_0_32px_rgba(133,173,255,0.04)] relative overflow-hidden flex flex-col transform transition-all scale-100">
+        <div class="absolute top-0 left-0 w-full h-[2px] bg-gradient-to-r from-transparent via-primary to-transparent opacity-60"></div>
+        <div class="px-8 pt-10 pb-6 border-b border-outline-variant/10">
+            <div class="flex items-center gap-3 mb-2">
+                <div class="w-8 h-8 rounded-lg bg-surface-bright flex items-center justify-center text-primary shadow-[0_0_12px_rgba(133,173,255,0.15)]">
+                    <span class="material-symbols-outlined text-[18px]">description</span>
+                </div>
+                <div class="flex-1">
+                    <h2 class="font-headline text-2xl font-bold tracking-tight text-on-surface">Application Logs</h2>
+                    <p class="text-xs text-on-surface-variant mt-1">Showing last <span id="logs-count">500</span> lines</p>
+                </div>
+                <button id="refresh-logs-btn" class="px-4 py-2 rounded-xl text-sm font-headline font-semibold text-primary bg-surface-container border border-primary/30 hover:bg-surface-bright hover:border-primary/50 transition-all">
+                    Refresh
+                </button>
+            </div>
+            <button class="absolute top-4 right-4 text-2xl text-on-surface-variant hover:text-on-surface" id="close-logs">&times;</button>
+        </div>
+        <div class="flex-1 overflow-y-auto px-8 py-6 bg-surface-container-low">
+            <pre id="logs-content" class="text-xs font-mono text-on-surface leading-relaxed whitespace-pre-wrap break-words">Loading logs...</pre>
+        </div>
+        <div class="px-8 py-4 bg-surface-container-low/50 border-t border-outline-variant/10 flex items-center justify-between gap-4 rounded-b-[20px]">
+            <div class="text-xs text-on-surface-variant">
+                Total lines: <span id="logs-total">-</span> | Displayed: <span id="logs-displayed">-</span>
+            </div>
+            <button id="close-logs-2" class="px-6 py-3 rounded-xl text-sm font-headline font-semibold text-on-surface-variant bg-surface-container-highest border border-outline-variant/30 hover:text-on-surface hover:bg-surface-bright hover:border-outline-variant/50 transition-all">Close</button>
         </div>
     </div>
 </div>

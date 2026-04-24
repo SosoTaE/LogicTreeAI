@@ -163,6 +163,9 @@ class MultiAgentSession(Base):
     current_round = Column(Integer, nullable=False, default=0)
     conversation_mode = Column(String(20), nullable=False, default='sequential')  # sequential or parallel
     status = Column(String(20), nullable=False, default='active')  # active, completed, stopped
+    synthesis = Column(Text, nullable=True)  # Synthesized conclusion of the discussion
+    synthesis_model = Column(String(100), nullable=True)  # Model used for synthesis
+    synthesized_at = Column(DateTime, nullable=True)  # When synthesis was created
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     completed_at = Column(DateTime, nullable=True)
 
@@ -185,6 +188,9 @@ class MultiAgentSession(Base):
             'current_round': self.current_round,
             'conversation_mode': self.conversation_mode,
             'status': self.status,
+            'synthesis': self.synthesis,
+            'synthesis_model': self.synthesis_model,
+            'synthesized_at': self.synthesized_at.isoformat() if self.synthesized_at else None,
             'created_at': self.created_at.isoformat() if self.created_at else None,
             'completed_at': self.completed_at.isoformat() if self.completed_at else None,
         }

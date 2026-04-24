@@ -779,6 +779,118 @@ function showLoading(show) {
     elements.loadingOverlay.style.display = show ? 'flex' : 'none';
 }
 
+// ==================== Navigation Bar Selection ====================
+
+function setActiveNavLink(linkId) {
+    // Remove active state from all nav links
+    const allNavLinks = document.querySelectorAll('.nav-link');
+    allNavLinks.forEach(link => {
+        link.classList.remove('text-[#85adff]', 'border-b-2', 'border-[#85adff]', 'pb-1', 'pt-1');
+        link.classList.add('text-[#dee5ff]/60', 'px-2');
+    });
+
+    // Add active state to clicked link
+    const activeLink = document.getElementById(linkId);
+    if (activeLink) {
+        activeLink.classList.remove('text-[#dee5ff]/60', 'px-2');
+        activeLink.classList.add('text-[#85adff]', 'border-b-2', 'border-[#85adff]', 'pb-1', 'pt-1');
+    }
+}
+
+// ==================== Logs Functionality ====================
+
+async function fetchLogs() {
+    try {
+        const response = await fetch('/api/logs?lines=500', {
+            credentials: 'include'
+        });
+
+        if (!response.ok) {
+            throw new Error('Failed to fetch logs');
+        }
+
+        const data = await response.json();
+
+        document.getElementById('logs-content').textContent = data.logs;
+        document.getElementById('logs-total').textContent = data.total_lines;
+        document.getElementById('logs-displayed').textContent = data.returned_lines;
+        document.getElementById('logs-count').textContent = data.returned_lines;
+
+        // Auto-scroll to bottom
+        const logsContent = document.getElementById('logs-content');
+        logsContent.parentElement.scrollTop = logsContent.parentElement.scrollHeight;
+
+    } catch (error) {
+        console.error('Error fetching logs:', error);
+        document.getElementById('logs-content').textContent = 'Error loading logs: ' + error.message;
+    }
+}
+
+function openLogsModal() {
+    const modal = document.getElementById('logs-modal');
+    if (modal) {
+        modal.classList.add('active');
+        fetchLogs();
+    }
+}
+
+function closeLogsModal() {
+    const modal = document.getElementById('logs-modal');
+    if (modal) {
+        modal.classList.remove('active');
+    }
+    // Switch back to Models nav
+    setActiveNavLink('models-nav-link');
+}
+
+// Event listeners for navigation and logs
+document.addEventListener('DOMContentLoaded', function() {
+    // Models nav link
+    const modelsNavLink = document.getElementById('models-nav-link');
+    if (modelsNavLink) {
+        modelsNavLink.addEventListener('click', function(e) {
+            e.preventDefault();
+            setActiveNavLink('models-nav-link');
+            // Models view is the default, nothing else needed
+        });
+    }
+
+    // Logs nav link
+    const logsNavLink = document.getElementById('logs-nav-link');
+    if (logsNavLink) {
+        logsNavLink.addEventListener('click', function(e) {
+            e.preventDefault();
+            setActiveNavLink('logs-nav-link');
+            openLogsModal();
+        });
+    }
+
+    const closeLogsBtn = document.getElementById('close-logs');
+    if (closeLogsBtn) {
+        closeLogsBtn.addEventListener('click', closeLogsModal);
+    }
+
+    const closeLogsBtn2 = document.getElementById('close-logs-2');
+    if (closeLogsBtn2) {
+        closeLogsBtn2.addEventListener('click', closeLogsModal);
+    }
+
+    const refreshLogsBtn = document.getElementById('refresh-logs-btn');
+    if (refreshLogsBtn) {
+        refreshLogsBtn.addEventListener('click', fetchLogs);
+    }
+
+    // Close modal on background click
+    const logsModal = document.getElementById('logs-modal');
+    if (logsModal) {
+        logsModal.addEventListener('click', function(e) {
+            if (e.target === logsModal) {
+                closeLogsModal();
+            }
+        });
+    }
+});
+
 // Initialize the app when DOM is ready
 if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', init);

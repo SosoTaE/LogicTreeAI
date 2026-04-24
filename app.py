@@ -134,6 +134,42 @@ def auth_me():
     return jsonify(_current_user().to_dict())
 
 
+# ==================== Logs ====================
+
+@app.route('/api/logs', methods=['GET'])
+@login_required
+def get_logs():
+    """Fetch application logs."""
+    try:
+        # Get number of lines to retrieve (default 500, max 2000)
+        lines = min(int(request.args.get('lines', 500)), 2000)
+
+        log_file_path = 'logs/app.log'
+
+        # Read the last N lines from the log file
+        try:
+            with open(log_file_path, 'r', encoding='utf-8') as f:
+                all_lines = f.readlines()
+                log_lines = all_lines[-lines:] if len(all_lines) > lines else all_lines
+
+            return jsonify({
+                'status': 'success',
+                'logs': ''.join(log_lines),
+                'total_lines': len(all_lines),
+                'returned_lines': len(log_lines)
+            })
+        except FileNotFoundError:
+            return jsonify({
+                'status': 'success',
+                'logs': 'No logs available yet.',
+                'total_lines': 0,
+                'returned_lines': 0
+            })
+    except Exception as e:
+        logger.exception("Failed to fetch logs")
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+
 # ==================== User Management (admin only) ====================
 
 @app.route('/api/users', methods=['GET'])
@@ -1223,6 +1259,13 @@ def synthesize_multi_agent_session(session_id):
             synthesis_model=synthesis_model,
             user_keys=user_keys,
         )
+
+        # Save synthesis to the database
+        if 'error' not in synthesis_result:
+            session_obj.synthesis = synthesis_result.get('synthesis', '')
+            session_obj.synthesis_model = synthesis_model
+            session_obj.synthesized_at = datetime.now()
+            db.commit()
 
         logger.info(
             "Multi-agent session synthesized: session_id=%s synthesis_model=%s",

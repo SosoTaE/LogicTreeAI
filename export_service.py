@@ -139,6 +139,23 @@ def session_to_docx(session):
                     for run in p.runs:
                         run.font.size = Pt(11)
 
+    # Synthesis section (if available)
+    if session.synthesis:
+        doc.add_heading('Synthesis', level=1)
+        if session.synthesis_model:
+            model_para = doc.add_paragraph()
+            model_run = model_para.add_run(f'Synthesized by: {session.synthesis_model}')
+            model_run.italic = True
+            model_run.font.size = Pt(10)
+
+        # Split on blank lines for better formatting
+        for block in session.synthesis.split('\n\n'):
+            if not block.strip():
+                continue
+            p = doc.add_paragraph(block.strip())
+            for run in p.runs:
+                run.font.size = Pt(11)
+
     buf = io.BytesIO()
     doc.save(buf)
     return buf.getvalue()
@@ -256,6 +273,23 @@ def session_to_pdf(session):
                         _escape_pdf(block).replace('\n', '<br/>'),
                         styles['Body'],
                     ))
+
+    # Synthesis section (if available)
+    if session.synthesis:
+        story.append(Paragraph('Synthesis', styles['H1']))
+        if session.synthesis_model:
+            story.append(Paragraph(
+                f'<i>Synthesized by: {_escape_pdf(session.synthesis_model)}</i>',
+                styles['Meta'],
+            ))
+        for block in session.synthesis.split('\n\n'):
+            block = block.strip()
+            if not block:
+                continue
+            story.append(Paragraph(
+                _escape_pdf(block).replace('\n', '<br/>'),
+                styles['Body'],
+            ))
 
     doc.build(story)
     return buf.getvalue()
