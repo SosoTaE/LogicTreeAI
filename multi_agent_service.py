@@ -52,12 +52,20 @@ class MultiAgentService:
         """
         prompt_parts = []
 
-        # Add context about the conversation
-        prompt_parts.append("You are having a conversation with other AI models to collaboratively solve a problem.")
-        prompt_parts.append("This is a turn-based discussion where you respond to what the previous models said.")
+        # Context: there may be a human in the loop too, not just peer AIs.
+        prompt_parts.append(
+            "You are having a conversation with other AI models AND a human "
+            "user to collaboratively explore a problem."
+        )
+        prompt_parts.append(
+            "This is a turn-based discussion. Respond to what previous "
+            "participants (other models and the human) have said."
+        )
 
         if role:
-            prompt_parts.append(f"\nYour role: {role}")
+            prompt_parts.append(
+                f"\nYour assigned role / persona (stay in this voice): {role}"
+            )
 
         prompt_parts.append(f"\nOriginal Problem:\n{initial_problem}\n")
 
@@ -67,15 +75,21 @@ class MultiAgentService:
             for turn in conversation_history:
                 model_name = turn.get('model_name', 'Unknown')
                 content = turn.get('content', '')
-                role_text = f" ({turn.get('role')})" if turn.get('role') else ""
-                prompt_parts.append(f"\n{model_name}{role_text}:\n{content}\n")
+                if model_name == 'user':
+                    # Human interjection — label clearly so the current
+                    # model knows this is the actual user, not a peer AI.
+                    prompt_parts.append(f"\nHuman (the user):\n{content}\n")
+                else:
+                    peer_role = turn.get('model_role') or turn.get('role')
+                    role_text = f" ({peer_role})" if peer_role else ""
+                    prompt_parts.append(f"\n{model_name}{role_text}:\n{content}\n")
             prompt_parts.append("--- End of Conversation ---\n")
             prompt_parts.append(f"\nNow it's your turn ({current_model}).")
             prompt_parts.append("Please respond to the conversation above:")
-            prompt_parts.append("- Address what the previous models said")
-            prompt_parts.append("- Add your perspective or insights")
-            prompt_parts.append("- Ask questions or challenge ideas if needed")
-            prompt_parts.append("- Build towards a solution")
+            prompt_parts.append("- If the human just spoke, address what they said directly")
+            prompt_parts.append("- Engage with the other models' points — agree, disagree, build on them")
+            prompt_parts.append("- Add your own perspective or insights")
+            prompt_parts.append("- Stay in your assigned role/persona if one was given")
         else:
             prompt_parts.append("\nYou are the first to speak in this conversation.")
             prompt_parts.append("Please share your initial thoughts and analysis of the problem.")

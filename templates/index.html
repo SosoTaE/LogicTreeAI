@@ -195,7 +195,7 @@
 </nav>
 
 <!-- History Panel -->
-<div id="history-panel" class="absolute left-20 top-0 bottom-0 w-64 bg-surface-container-low border-r border-outline-variant/15 z-40 flex flex-col hidden">
+<div id="history-panel" class="absolute left-20 top-0 bottom-0 w-64 bg-surface-container-low border-r border-outline-variant/15 z-50 flex flex-col hidden">
     <div class="p-4 border-b border-outline-variant/15 font-bold flex justify-between items-center h-16">
         <span class="text-[#85adff]">Conversations</span>
         <button id="new-chat-btn" class="text-xs bg-primary text-on-primary px-3 py-1.5 rounded-md hover:bg-primary-dim transition-colors">+ New</button>
@@ -204,7 +204,7 @@
 </div>
 
 <!-- Multi-Agent Panel -->
-<div id="multi-agent-panel" class="absolute left-20 top-0 bottom-0 w-80 bg-surface-container-low border-r border-outline-variant/15 z-40 flex flex-col hidden">
+<div id="multi-agent-panel" class="absolute left-20 top-0 bottom-0 w-80 bg-surface-container-low border-r border-outline-variant/15 z-50 flex flex-col hidden">
     <div class="p-4 border-b border-outline-variant/15 font-bold flex justify-between items-center h-16">
         <span class="text-[#85adff]">Multi-Agent Sessions</span>
         <button id="new-multi-agent-btn" class="text-xs bg-tertiary text-on-tertiary px-3 py-1.5 rounded-md hover:bg-tertiary-dim transition-colors">+ New</button>
@@ -460,6 +460,13 @@
                 </div>
             </div>
 
+            <div class="flex flex-col" id="ma-roles-section">
+                <label class="text-[11px] font-headline text-on-surface-variant tracking-widest uppercase font-medium mb-2 pl-1">Roles (Optional System Prompt per Model)</label>
+                <div id="ma-roles-container" class="flex flex-col gap-2 p-4 bg-surface-container-low rounded-lg">
+                    <div class="text-xs text-on-surface-variant">Select models above to assign roles/personas (e.g. "senior developer", "devil's advocate", "skeptical politician").</div>
+                </div>
+            </div>
+
             <div class="flex flex-col">
                 <label class="text-[11px] font-headline text-on-surface-variant tracking-widest uppercase font-medium mb-2 pl-1">Conversation Mode</label>
                 <select id="ma-mode" class="w-full bg-surface-container-low border-0 border-b-2 border-outline-variant focus:border-tertiary focus:ring-0 text-on-surface pl-4 pr-4 py-3 text-sm transition-all outline-none rounded-t-lg shadow-inner">
@@ -509,9 +516,27 @@
         <div id="ma-view-discussion" class="flex-1 overflow-y-auto px-8 py-6 space-y-6">
             <div class="text-sm text-on-surface-variant">Loading discussion...</div>
         </div>
+        <div id="ma-user-composer" class="px-8 py-4 bg-surface-container-low border-t border-outline-variant/10">
+            <label class="text-[10px] font-headline text-on-surface-variant tracking-widest uppercase font-medium mb-2 block">Your turn — join the discussion</label>
+            <div class="flex items-start gap-3">
+                <textarea id="ma-user-input" rows="2" placeholder="Ask a question, steer the discussion, or share an idea..." class="flex-1 bg-surface-container border-0 border-b-2 border-outline-variant focus:border-tertiary focus:ring-0 text-on-surface p-3 text-sm transition-all outline-none rounded-t-lg shadow-inner resize-none"></textarea>
+                <button id="ma-user-send-btn" class="px-5 py-3 rounded-xl text-sm font-headline font-semibold text-on-primary-fixed bg-gradient-to-br from-primary to-tertiary hover:brightness-110 active:scale-[0.98] transition-all shadow-[0_0_16px_rgba(133,173,255,0.15)] whitespace-nowrap">
+                    Send &amp; reply
+                </button>
+            </div>
+            <p class="text-[11px] text-on-surface-variant mt-2">Your message is inserted into the conversation, then the next AI in the rotation replies to it.</p>
+        </div>
         <div class="px-8 py-4 bg-surface-container-low/50 border-t border-outline-variant/10 flex items-center justify-between gap-4 rounded-b-[20px]">
             <button id="ma-continue-btn" class="px-6 py-3 rounded-xl text-sm font-headline font-semibold text-on-surface bg-surface-container-highest border border-outline-variant/30 hover:bg-surface-bright hover:border-outline-variant/50 transition-all">Continue Discussion</button>
             <div class="flex gap-3">
+                <button id="ma-export-docx-btn" class="px-4 py-3 rounded-xl text-sm font-headline font-semibold text-on-surface bg-surface-container-highest border border-outline-variant/30 hover:bg-surface-bright hover:border-outline-variant/50 transition-all inline-flex items-center gap-1.5">
+                    <span class="material-symbols-outlined text-[16px]">description</span>
+                    Word
+                </button>
+                <button id="ma-export-pdf-btn" class="px-4 py-3 rounded-xl text-sm font-headline font-semibold text-on-surface bg-surface-container-highest border border-outline-variant/30 hover:bg-surface-bright hover:border-outline-variant/50 transition-all inline-flex items-center gap-1.5">
+                    <span class="material-symbols-outlined text-[16px]">picture_as_pdf</span>
+                    PDF
+                </button>
                 <button id="ma-synthesize-btn" class="px-6 py-3 rounded-xl text-sm font-headline font-semibold text-tertiary bg-surface-container-highest border border-tertiary/30 hover:bg-surface-bright hover:border-tertiary/50 transition-all">Synthesize</button>
                 <button id="ma-stop-btn" class="px-6 py-3 rounded-xl text-sm font-headline font-semibold text-error bg-surface-container-highest border border-error/30 hover:bg-surface-bright hover:border-error/50 transition-all">Stop Session</button>
             </div>

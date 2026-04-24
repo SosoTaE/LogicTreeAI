@@ -3,10 +3,16 @@ Branching LLM Chat Application - Flask Backend
 """
 import logging
 import time
-from flask import Flask, request, jsonify, render_template, redirect, url_for, g, session
+from flask import (
+    Flask, request, jsonify, render_template, redirect, url_for, g, session,
+    Response,
+)
 from flask_cors import CORS
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from urllib.parse import quote as urlquote
+
+from export_service import session_to_docx, session_to_pdf, export_filename
 
 from logging_config import setup_logging
 setup_logging()
@@ -486,6 +492,264 @@ def create_message():
         db.close()
 
 
+# ==================== Turn-Based Discussion Endpoint ====================
+
+def _build_discussion_messages(path, current_model, participant_models):
+    """
+    Frame the conversation from current_model's point of view so multiple
+    LLMs can actually TALK TO EACH OTHER, not silently extend one big
+    assistant monologue.
+
+    Mapping walked over the linear path:
+      - Original user seed + prior-user messages      -> user
+      - Prior assistant turns authored by current_model (its own voice)
+                                                      -> assistant
+      - Prior assistant turns authored by a PEER model -> user, prefixed
+        with '[<peer> said]:' so the current model sees who addressed it.
+      - Consecutive same-role blocks are merged (Anthropic requires strict
+        user/assistant alternation).
+      - Tail is forced to user so no provider falls into prefill mode.
+
+    A leading system message names the current model and its peers and
+    tells it not to impersonate them.
+    """
+    peers = [m for m in participant_models if m != current_model]
+    if peers:
+        peer_list = ', '.join(peers)
+        peer_sentence = (
+            f"The other participants are: {peer_list}. "
+            f"Text inside a user turn prefixed with '[<model> said]:' was "
+            f"authored by one of those peers, not by the human user."
+        )
+    else:
+        peer_sentence = (
+            "You are the sole AI participant in this discussion."
+        )
+    system_frame = (
+        f"You are {current_model}, participating in a multi-agent "
+        f"discussion with other AI models. {peer_sentence} "
+        f"Respond as yourself — acknowledge, agree, disagree, or build "
+        f"on what the others said. Do not roleplay as another model or "
+        f"merely restate their reply."
+    )
+
+    out = [{'role': 'system', 'content': system_frame}]
+
+    def _append(role, content):
+        if out and out[-1]['role'] == role and role != 'system':
+            out[-1]['content'] += '\n\n' + content
+        else:
+            out.append({'role': role, 'content': content})
+
+    for msg in path:
+        if msg.role == 'user':
+            _append('user', msg.content)
+        elif msg.role == 'assistant':
+            if msg.model_used == current_model:
+                _append('assistant', msg.content)
+            else:
+                label = msg.model_used or 'another participant'
+                _append('user', f"[{label} said]:\n{msg.content}")
+        else:
+            _append(msg.role, msg.content)
+
+    if out[-1]['role'] == 'assistant':
+        out.append({
+            'role': 'user',
+            'content': 'Please continue the discussion with your next response.',
+        })
+
+    return out
+
+
+@app.route('/api/discuss', methods=['POST'])
+@login_required
+def discuss():
+    """
+    Run a turn-based discussion where multiple LLMs take turns on a linear
+    branch of the conversation tree.
+
+    Payload:
+        conversation_id (int)         target conversation
+        parent_id       (int | None)  starting node (None = new root branch)
+        content         (str)         user's issue to seed the discussion
+        participant_models (list)     ordered models to rotate through
+        turn_limit      (int)         total number of AI messages to generate
+    """
+    user = _current_user()
+    data = request.json or {}
+
+    conversation_id = data.get('conversation_id')
+    parent_id = data.get('parent_id')
+    content = (data.get('content') or '').strip()
+    participant_models = data.get('participant_models')
+    turn_limit = data.get('turn_limit')
+
+    if not conversation_id:
+        return jsonify({'status': 'error', 'message': 'conversation_id is required'}), 400
+    if not content:
+        return jsonify({'status': 'error', 'message': 'content is required'}), 400
+    if not isinstance(participant_models, list) or not participant_models:
+        return jsonify({
+            'status': 'error',
+            'message': 'participant_models must be a non-empty list',
+        }), 400
+    if not all(isinstance(m, str) and m.strip() for m in participant_models):
+        return jsonify({
+            'status': 'error',
+            'message': 'participant_models entries must be non-empty strings',
+        }), 400
+    try:
+        turn_limit = int(turn_limit)
+    except (TypeError, ValueError):
+        return jsonify({'status': 'error', 'message': 'turn_limit must be an integer'}), 400
+    if turn_limit < 1 or turn_limit > 50:
+        return jsonify({
+            'status': 'error',
+            'message': 'turn_limit must be between 1 and 50',
+        }), 400
+
+    db = get_session()
+    try:
+        conversation = db.query(Conversation).filter_by(
+            id=conversation_id, user_id=user.id,
+        ).first()
+        if not conversation:
+            return jsonify({'status': 'error', 'message': 'Conversation not found'}), 404
+
+        if parent_id is not None:
+            parent = db.query(Message).filter_by(
+                id=parent_id, conversation_id=conversation_id,
+            ).first()
+            if not parent:
+                return jsonify({'status': 'error', 'message': 'Parent message not found'}), 404
+
+        # 1. Save the user's message as a child of the initial parent_id.
+        user_message = Message(
+            conversation_id=conversation_id,
+            parent_id=parent_id,
+            role='user',
+            content=content,
+            model_used=None,
+        )
+        db.add(user_message)
+        db.commit()
+
+        logger.info(
+            "Discussion start: user_id=%s conv_id=%s user_msg_id=%s parent_id=%s "
+            "models=%s turns=%d",
+            user.id, conversation_id, user_message.id, parent_id,
+            participant_models, turn_limit,
+        )
+
+        user_keys = get_user_api_keys(db, user.id)
+        created_messages = [user_message.to_dict()]
+        errors = []
+
+        # 2. Pointer tracks the tail of the linear branch.
+        current_parent_id = user_message.id
+        discussion_started = time.perf_counter()
+
+        # 3. Loop turn_limit times.
+        for iteration in range(turn_limit):
+            # 4. Round-robin model selection.
+            selected_model = participant_models[iteration % len(participant_models)]
+
+            # 5. Reconstruct linear history root -> current_parent_id.
+            current_parent = db.query(Message).filter_by(
+                id=current_parent_id, conversation_id=conversation_id,
+            ).first()
+            if not current_parent:
+                logger.error(
+                    "Discussion aborted: parent msg_id=%s vanished mid-loop",
+                    current_parent_id,
+                )
+                break
+            conversation_path = current_parent.get_conversation_path(db)
+            discussion_messages = _build_discussion_messages(
+                conversation_path, selected_model, participant_models,
+            )
+
+            # 6. Call the selected model (cloud or Ollama-compatible local).
+            turn_started = time.perf_counter()
+            try:
+                response = llm_service.call_llm(
+                    discussion_messages, selected_model, user_keys,
+                )
+            except ValueError as e:
+                errors.append({
+                    'iteration': iteration,
+                    'model': selected_model,
+                    'error': str(e),
+                    'type': 'config',
+                })
+                logger.warning(
+                    "Discussion turn config error: iter=%d model=%s err=%s",
+                    iteration, selected_model, e,
+                )
+                continue
+            except Exception as e:
+                errors.append({
+                    'iteration': iteration,
+                    'model': selected_model,
+                    'error': str(e),
+                    'type': 'api',
+                })
+                logger.error(
+                    "Discussion turn api error: iter=%d model=%s err=%s",
+                    iteration, selected_model, e,
+                )
+                continue
+
+            turn_duration = time.perf_counter() - turn_started
+
+            # 7. Save the AI's response as a child of current_parent_id.
+            ai_message = Message(
+                conversation_id=conversation_id,
+                parent_id=current_parent_id,
+                role='assistant',
+                content=response,
+                model_used=selected_model,
+            )
+            db.add(ai_message)
+            db.commit()
+
+            created_messages.append(ai_message.to_dict())
+            logger.info(
+                "Discussion turn %d ok: model=%s ai_msg_id=%s duration=%.2fs",
+                iteration, selected_model, ai_message.id, turn_duration,
+            )
+
+            # 8. Advance the pointer; next model replies to this AI message.
+            current_parent_id = ai_message.id
+
+        discussion_duration = time.perf_counter() - discussion_started
+        ai_count = len(created_messages) - 1
+
+        logger.info(
+            "Discussion complete: user_id=%s conv_id=%s ai_turns=%d errors=%d "
+            "duration=%.2fs",
+            user.id, conversation_id, ai_count, len(errors), discussion_duration,
+        )
+
+        status = 'success' if not errors else ('partial_failure' if ai_count else 'failure')
+        http_code = 201 if ai_count else 502
+        return jsonify({
+            'status': status,
+            'messages': created_messages,
+            'errors': errors or None,
+        }), http_code
+
+    except Exception as e:
+        db.rollback()
+        logger.exception(
+            "Discuss endpoint failed user_id=%s conv_id=%s", user.id, conversation_id,
+        )
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+    finally:
+        db.close()
+
+
 # ==================== Multi-Agent Conversation Endpoints ====================
 
 @app.route('/api/multi-agent/sessions', methods=['GET'])
@@ -677,7 +941,14 @@ def continue_multi_agent_session(session_id):
         if session_obj.status != 'active':
             return jsonify({'status': 'error', 'message': f'Session is {session_obj.status}'}), 400
 
-        if session_obj.current_round >= session_obj.max_rounds:
+        # AI-turn count drives both the completion check and the
+        # round-robin rotation, so human turns don't burn the budget or
+        # shift which model speaks next.
+        ai_turn_count = sum(
+            1 for t in session_obj.turns
+            if t.model_name != 'user' and not t.error
+        )
+        if ai_turn_count >= session_obj.max_rounds:
             session_obj.status = 'completed'
             session_obj.completed_at = datetime.utcnow()
             db.commit()
@@ -687,7 +958,7 @@ def continue_multi_agent_session(session_id):
                 'session': session_obj.to_dict(include_turns=True),
             }), 400
 
-        # Get discussion history
+        # Get discussion history (includes user turns; errors excluded)
         discussion_history = [turn.to_dict() for turn in session_obj.turns if not turn.error]
 
         # Run the next turn/round
@@ -695,9 +966,9 @@ def continue_multi_agent_session(session_id):
         user_keys = get_user_api_keys(db, user.id)
 
         if session_obj.conversation_mode == 'sequential':
-            # Sequential: Determine which model's turn it is
-            # Models rotate in order
-            model_index = (next_turn_num - 1) % len(session_obj.participating_models)
+            # Sequential: rotate across AI turns only, so the cursor
+            # doesn't jump when the human chimes in.
+            model_index = ai_turn_count % len(session_obj.participating_models)
             current_model = session_obj.participating_models[model_index]
             role = session_obj.model_roles.get(current_model) if session_obj.model_roles else None
 
@@ -800,8 +1071,14 @@ def continue_multi_agent_session(session_id):
 
         session_obj.current_round = next_turn_num
 
-        # Check if this was the last turn
-        if next_turn_num >= session_obj.max_rounds:
+        # Completion is based on AI turns produced, not total turns.
+        # Recount so sequential (+1 AI turn) and parallel (+N AI turns)
+        # both update correctly.
+        new_ai_turn_count = sum(
+            1 for t in session_obj.turns
+            if t.model_name != 'user' and not t.error
+        )
+        if new_ai_turn_count >= session_obj.max_rounds:
             session_obj.status = 'completed'
             session_obj.completed_at = datetime.utcnow()
 
@@ -821,6 +1098,64 @@ def continue_multi_agent_session(session_id):
     except Exception as e:
         db.rollback()
         logger.exception("Multi-agent session continue failed: session_id=%s", session_id)
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+    finally:
+        db.close()
+
+
+@app.route('/api/multi-agent/sessions/<int:session_id>/user-message', methods=['POST'])
+@login_required
+def add_user_message_to_multi_agent_session(session_id):
+    """Insert a human message into a multi-agent discussion.
+
+    User turns are stored with model_name='user'; they do NOT count toward
+    max_rounds and do NOT advance the model-rotation cursor. The next call
+    to /continue will let the next AI in the rotation respond to whatever
+    the user said.
+    """
+    user = _current_user()
+    data = request.json or {}
+    content = (data.get('content') or '').strip()
+    if not content:
+        return jsonify({'status': 'error', 'message': 'content is required'}), 400
+
+    db = get_session()
+    try:
+        session_obj = db.query(MultiAgentSession).filter_by(
+            id=session_id, user_id=user.id,
+        ).first()
+        if not session_obj:
+            return jsonify({'status': 'error', 'message': 'Session not found'}), 404
+        if session_obj.status != 'active':
+            return jsonify({
+                'status': 'error',
+                'message': f'Session is {session_obj.status}',
+            }), 400
+
+        next_turn_num = session_obj.current_round + 1
+        turn = MultiAgentTurn(
+            session_id=session_obj.id,
+            turn_number=next_turn_num,
+            model_name='user',
+            model_role=None,
+            content=content,
+            duration=None,
+        )
+        db.add(turn)
+        session_obj.current_round = next_turn_num
+        db.commit()
+
+        logger.info(
+            "Multi-agent user message: session_id=%s turn=%d chars=%d",
+            session_id, next_turn_num, len(content),
+        )
+        return jsonify({
+            'status': 'success',
+            'session': session_obj.to_dict(include_turns=True),
+        })
+    except Exception as e:
+        db.rollback()
+        logger.exception("Multi-agent user message failed: session_id=%s", session_id)
         return jsonify({'status': 'error', 'message': str(e)}), 500
     finally:
         db.close()
@@ -904,6 +1239,69 @@ def synthesize_multi_agent_session(session_id):
         return jsonify({'status': 'error', 'message': str(e)}), 500
     finally:
         db.close()
+
+
+@app.route('/api/multi-agent/sessions/<int:session_id>/export', methods=['GET'])
+@login_required
+def export_multi_agent_session(session_id):
+    """Export a multi-agent session as a Word document or PDF.
+
+    Query params:
+        format: 'docx' (default) or 'pdf'
+    """
+    fmt = (request.args.get('format') or 'docx').lower()
+    if fmt not in ('docx', 'pdf'):
+        return jsonify({
+            'status': 'error',
+            'message': "format must be 'docx' or 'pdf'",
+        }), 400
+
+    user = _current_user()
+    db = get_session()
+    try:
+        session_obj = db.query(MultiAgentSession).filter_by(
+            id=session_id, user_id=user.id,
+        ).first()
+        if not session_obj:
+            return jsonify({'status': 'error', 'message': 'Session not found'}), 404
+
+        # Force-load turns while the session is still open so render
+        # functions can walk them after this block returns.
+        _ = list(session_obj.turns)
+
+        if fmt == 'pdf':
+            body = session_to_pdf(session_obj)
+            mime = 'application/pdf'
+        else:
+            body = session_to_docx(session_obj)
+            mime = (
+                'application/vnd.openxmlformats-officedocument'
+                '.wordprocessingml.document'
+            )
+
+        filename = export_filename(session_obj, fmt)
+    finally:
+        db.close()
+
+    logger.info(
+        "Multi-agent session exported: session_id=%s user_id=%s format=%s "
+        "bytes=%d",
+        session_id, user.id, fmt, len(body),
+    )
+
+    # Use both filename (ASCII fallback) and filename* (RFC 5987) so titles
+    # with non-ASCII characters download correctly across browsers.
+    ascii_fallback = filename.encode('ascii', 'ignore').decode('ascii') or (
+        f'discussion_{session_id}.{fmt}'
+    )
+    content_disposition = (
+        f'attachment; filename="{ascii_fallback}"; '
+        f"filename*=UTF-8''{urlquote(filename)}"
+    )
+    return Response(body, mimetype=mime, headers={
+        'Content-Disposition': content_disposition,
+        'Content-Length': str(len(body)),
+    })
 
 
 @app.route('/api/multi-agent/sessions/<int:session_id>', methods=['DELETE'])

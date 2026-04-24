@@ -98,6 +98,19 @@ function closeMultiAgentModal() {
     }
 }
 
+// Pick one representative model per provider to pre-check in the modal so
+// a new session spans multiple providers (OpenAI + Anthropic + Gemini +
+// local) without the user clicking through a long list.
+function _pickDefaultModel(modelList, preferenceSubstrings) {
+    if (!Array.isArray(modelList) || modelList.length === 0) return null;
+    const lowered = modelList.map(m => ({ name: m, lc: m.toLowerCase() }));
+    for (const pref of preferenceSubstrings) {
+        const hit = lowered.find(m => m.lc.includes(pref));
+        if (hit) return hit.name;
+    }
+    return modelList[0];
+}
+
 // Load models for multi-agent selection
 async function loadModelsForMultiAgent() {
     const container = document.getElementById('ma-models-container');
@@ -108,6 +121,19 @@ async function loadModelsForMultiAgent() {
         if (!response.ok) throw new Error('Failed to load models');
 
         const models = await response.json();
+
+        // Per-provider default (pre-checked). Preferences are the
+        // substrings we try in order; first match wins, else fall back to
+        // the first model in the list.
+        const defaultByProvider = {
+            openai: _pickDefaultModel(models.openai, ['gpt-4o', 'gpt-4.1', 'gpt-4', 'gpt-3.5']),
+            anthropic: _pickDefaultModel(models.anthropic, ['sonnet', 'opus', 'haiku']),
+            gemini: _pickDefaultModel(models.gemini, ['gemini-3', 'gemini-2.5-pro', 'gemini-2.5', 'gemini-2.0', 'gemini-1.5-pro']),
+            local: _pickDefaultModel(models.local, []),
+        };
+        const defaults = new Set(
+            Object.values(defaultByProvider).filter(Boolean)
+        );
 
         // Flatten all models from all providers
         const allModels = [];
@@ -124,18 +150,76 @@ async function loadModelsForMultiAgent() {
             return;
         }
 
-        container.innerHTML = allModels.map((model, idx) => `
+        container.innerHTML = allModels.map((model) => {
+            const checked = defaults.has(model.name) ? 'checked' : '';
+            return `
             <label class="flex items-center gap-2 p-2 bg-surface-container rounded cursor-pointer hover:bg-surface-bright transition-colors">
-                <input type="checkbox" name="ma-model" value="${escapeHtml(model.name)}"
+                <input type="checkbox" name="ma-model" value="${escapeHtml(model.name)}" ${checked}
                        class="w-4 h-4 text-tertiary bg-surface-container-low border-outline-variant rounded focus:ring-tertiary focus:ring-2">
                 <span class="text-xs text-on-surface truncate" title="${escapeHtml(model.name)}">${escapeHtml(model.name)}</span>
             </label>
-        `).join('');
+        `;
+        }).join('');
+
+        // Keep the per-model role editor in sync with which checkboxes
+        // are checked.
+        container.querySelectorAll('input[name="ma-model"]').forEach(cb => {
+            cb.addEventListener('change', renderRolesEditor);
+        });
+        renderRolesEditor();
 
     } catch (error) {
         console.error('Error loading models:', error);
         container.innerHTML = '<div class="col-span-2 text-sm text-error">Error loading models</div>';
     }
+}
+
+// Render one role/system-prompt input per checked model. Preserves any
+// text the user already typed across re-renders.
+function renderRolesEditor() {
+    const rolesContainer = document.getElementById('ma-roles-container');
+    if (!rolesContainer) return;
+
+    // Snapshot existing role inputs so toggling checkboxes doesn't wipe
+    // values the user already typed.
+    const existing = {};
+    rolesContainer.querySelectorAll('input[data-role-for]').forEach(inp => {
+        existing[inp.getAttribute('data-role-for')] = inp.value;
+    });
+
+    const checked = Array.from(document.querySelectorAll('input[name="ma-model"]:checked'))
+        .map(cb => cb.value);
+
+    if (checked.length === 0) {
+        rolesContainer.innerHTML = '<div class="text-xs text-on-surface-variant">Select models above to assign roles/personas (e.g. "senior developer", "devil\'s advocate", "skeptical politician").</div>';
+        return;
+    }
+
+    rolesContainer.innerHTML = checked.map(model => {
+        const existingValue = escapeHtml(existing[model] || '');
+        return `
+            <div class="flex items-center gap-3">
+                <span class="text-xs font-mono text-tertiary min-w-[160px] truncate" title="${escapeHtml(model)}">${escapeHtml(model)}</span>
+                <input type="text"
+                    data-role-for="${escapeHtml(model)}"
+                    value="${existingValue}"
+                    placeholder="e.g. senior developer, politician, sceptic — leave blank for none"
+                    class="flex-1 bg-surface-container border-0 border-b-2 border-outline-variant focus:border-tertiary focus:ring-0 text-on-surface px-3 py-2 text-xs transition-all outline-none rounded-t shadow-inner"/>
+            </div>
+        `;
+    }).join('');
+}
+
+// Read the role editor into a { modelName: roleString } map, dropping
+// empty entries so the backend's optional field stays clean.
+function collectModelRoles() {
+    const roles = {};
+    document.querySelectorAll('input[data-role-for]').forEach(inp => {
+        const model = inp.getAttribute('data-role-for');
+        const value = (inp.value || '').trim();
+        if (model && value) roles[model] = value;
+    });
+    return roles;
 }
 
 // Start multi-agent discussion
@@ -174,6 +258,10 @@ async function startMultiAgentDiscussion(event) {
     errorEl.classList.add('hidden');
 
     try {
+        // auto_start=false keeps session creation near-instant (no LLM
+        // call blocks the response). We open the view modal right away
+        // and kick off the first turn in the background below, so the
+        // user sees progress instead of waiting on a frozen button.
         const response = await fetch('/api/multi-agent/sessions', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -182,9 +270,10 @@ async function startMultiAgentDiscussion(event) {
                 title: title || `Multi-Agent Discussion ${new Date().toLocaleString()}`,
                 initial_problem: problem,
                 participating_models: selectedModels,
+                model_roles: collectModelRoles(),
                 max_rounds: maxRounds,
                 conversation_mode: conversationMode,
-                auto_start: true
+                auto_start: false
             })
         });
 
@@ -195,12 +284,17 @@ async function startMultiAgentDiscussion(event) {
 
         const data = await response.json();
 
-        // Close modal and reload sessions
+        // Close the creation modal and open the discussion view
+        // immediately — the session exists, the first turn is running in
+        // the background.
         closeMultiAgentModal();
-        await loadMultiAgentSessions();
+        loadMultiAgentSessions();  // non-blocking sidebar refresh
+        await viewMultiAgentSession(data.session.id);
 
-        // Open the session view
-        viewMultiAgentSession(data.session.id);
+        // Kick off turn 1 now that the view is on-screen. The discussion
+        // container already shows "The first turn is being processed..."
+        // while this runs, and viewMultiAgentSession re-renders on return.
+        continueMultiAgentSession();
 
     } catch (error) {
         console.error('Error starting multi-agent discussion:', error);
@@ -235,12 +329,32 @@ async function viewMultiAgentSession(sessionId) {
         const continueBtn = document.getElementById('ma-continue-btn');
         const stopBtn = document.getElementById('ma-stop-btn');
 
-        if (session.status === 'active' && session.current_round < session.max_rounds) {
+        // "Rounds used" on the backend tracks AI turns only (human turns
+        // don't burn the budget), but the session object exposes
+        // current_round as a total turn counter. Compute AI-turn count
+        // here so the UI matches backend completion semantics.
+        const aiTurnCount = (session.turns || []).filter(
+            t => (t.model_name || '').toLowerCase() !== 'user' && !t.error
+        ).length;
+        const canContinue = session.status === 'active' && aiTurnCount < session.max_rounds;
+
+        if (canContinue) {
             continueBtn.classList.remove('hidden');
             stopBtn.classList.remove('hidden');
         } else {
             continueBtn.classList.add('hidden');
             stopBtn.classList.add('hidden');
+        }
+
+        // Composer is only useful while the session is active; lock it
+        // when stopped/completed.
+        const composer = document.getElementById('ma-user-composer');
+        if (composer) {
+            if (session.status === 'active') {
+                composer.classList.remove('hidden');
+            } else {
+                composer.classList.add('hidden');
+            }
         }
 
         // Show modal
@@ -258,18 +372,41 @@ function renderMultiAgentDiscussion(session) {
     if (!container) return;
 
     if (!session.turns || session.turns.length === 0) {
-        container.innerHTML = '<div class="text-sm text-on-surface-variant">No discussion yet. The first turn is being processed...</div>';
+        container.innerHTML = `
+            <div class="flex items-center gap-3 text-sm text-on-surface-variant">
+                <span class="inline-block w-4 h-4 border-2 border-tertiary/40 border-t-tertiary rounded-full animate-spin"></span>
+                <span>The first turn is being generated — this usually takes a few seconds per model.</span>
+            </div>`;
         return;
     }
 
     if (session.conversation_mode === 'sequential') {
         // Sequential mode: show turns in chronological order
-        container.innerHTML = session.turns.map((turn, index) => {
+        container.innerHTML = session.turns.map((turn) => {
+            const isUser = (turn.model_name || '').toLowerCase() === 'user';
+
             if (turn.error) {
                 return `
                     <div class="border border-error/20 rounded-lg p-4">
                         <div class="text-xs font-mono text-error mb-1">Turn ${turn.turn_number}: ${escapeHtml(turn.model_name)}</div>
                         <div class="text-sm text-error opacity-80">Error: ${escapeHtml(turn.error)}</div>
+                    </div>
+                `;
+            }
+
+            if (isUser) {
+                // Human interjection — styled to feel like "you said this"
+                // so it stands out from AI turns.
+                return `
+                    <div class="border border-primary/30 rounded-lg p-4 bg-primary/5">
+                        <div class="flex items-center gap-2 mb-3">
+                            <span class="material-symbols-outlined text-[16px] text-primary">person</span>
+                            <span class="text-xs font-mono text-primary font-bold">Turn ${turn.turn_number}</span>
+                            <span class="text-xs font-mono text-primary">You</span>
+                        </div>
+                        <div class="text-sm text-on-surface leading-relaxed prose prose-invert max-w-none border-l-2 border-primary pl-4">
+                            ${marked.parse(turn.content)}
+                        </div>
                     </div>
                 `;
             }
@@ -329,6 +466,54 @@ function renderMultiAgentDiscussion(session) {
                 </div>
             </div>
         `).join('');
+    }
+}
+
+// Post a human message into the running session and immediately trigger
+// the next AI turn so the rotation picks up where the user left off.
+async function sendUserMessageToMultiAgent() {
+    if (!multiAgentState.currentSession) return;
+    const sessionId = multiAgentState.currentSession.id;
+    const input = document.getElementById('ma-user-input');
+    const sendBtn = document.getElementById('ma-user-send-btn');
+    if (!input || !sendBtn) return;
+
+    const content = (input.value || '').trim();
+    if (!content) return;
+
+    const originalLabel = sendBtn.textContent;
+    sendBtn.disabled = true;
+    sendBtn.textContent = 'Sending...';
+    input.disabled = true;
+
+    try {
+        const response = await fetch(
+            `/api/multi-agent/sessions/${sessionId}/user-message`,
+            {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                credentials: 'include',
+                body: JSON.stringify({ content }),
+            },
+        );
+        if (!response.ok) {
+            const data = await response.json().catch(() => ({}));
+            throw new Error(data.message || `Failed to send (HTTP ${response.status})`);
+        }
+
+        input.value = '';
+        // Re-render the view with the newly-inserted user turn…
+        await viewMultiAgentSession(sessionId);
+        // …then kick the rotation so an AI replies to what we said.
+        continueMultiAgentSession();
+    } catch (error) {
+        console.error('Send failed:', error);
+        alert(`Could not send: ${error.message}`);
+    } finally {
+        sendBtn.disabled = false;
+        sendBtn.textContent = originalLabel;
+        input.disabled = false;
+        input.focus();
     }
 }
 
@@ -496,4 +681,74 @@ document.addEventListener('DOMContentLoaded', function() {
     if (synthesizeBtn) {
         synthesizeBtn.addEventListener('click', synthesizeMultiAgentSession);
     }
+
+    const exportDocxBtn = document.getElementById('ma-export-docx-btn');
+    if (exportDocxBtn) {
+        exportDocxBtn.addEventListener('click', () => exportMultiAgentSession('docx'));
+    }
+
+    const exportPdfBtn = document.getElementById('ma-export-pdf-btn');
+    if (exportPdfBtn) {
+        exportPdfBtn.addEventListener('click', () => exportMultiAgentSession('pdf'));
+    }
+
+    const userSendBtn = document.getElementById('ma-user-send-btn');
+    if (userSendBtn) {
+        userSendBtn.addEventListener('click', sendUserMessageToMultiAgent);
+    }
+
+    const userInput = document.getElementById('ma-user-input');
+    if (userInput) {
+        // Ctrl/Cmd+Enter submits — gives multi-line freedom plus a fast path.
+        userInput.addEventListener('keydown', (e) => {
+            if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
+                e.preventDefault();
+                sendUserMessageToMultiAgent();
+            }
+        });
+    }
 });
+
+// Trigger a download of the current multi-agent session as docx or pdf.
+// Uses fetch + Blob so the session cookie goes along and the browser save
+// dialog honors the Content-Disposition filename from the server.
+async function exportMultiAgentSession(format) {
+    if (!multiAgentState.currentSession) return;
+    const sessionId = multiAgentState.currentSession.id;
+    const url = `/api/multi-agent/sessions/${sessionId}/export?format=${encodeURIComponent(format)}`;
+    try {
+        const response = await fetch(url, { credentials: 'include' });
+        if (!response.ok) {
+            let msg = `Export failed (HTTP ${response.status})`;
+            try {
+                const data = await response.json();
+                if (data && data.message) msg = data.message;
+            } catch (_) { /* non-JSON body */ }
+            throw new Error(msg);
+        }
+        const blob = await response.blob();
+
+        // Pull filename out of Content-Disposition if present, else synthesize.
+        let filename = `discussion_${sessionId}.${format}`;
+        const disp = response.headers.get('Content-Disposition') || '';
+        const starMatch = disp.match(/filename\*\s*=\s*UTF-8''([^;]+)/i);
+        const plainMatch = disp.match(/filename\s*=\s*"([^"]+)"/i);
+        if (starMatch) {
+            try { filename = decodeURIComponent(starMatch[1]); } catch (_) {}
+        } else if (plainMatch) {
+            filename = plainMatch[1];
+        }
+
+        const objectUrl = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = objectUrl;
+        a.download = filename;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(objectUrl);
+    } catch (error) {
+        console.error('Export failed:', error);
+        alert(`Could not export discussion: ${error.message}`);
+    }
+}
