@@ -61,7 +61,7 @@ A sophisticated chat application that enables branching conversations, multi-age
 1. **Clone the repository**:
    ```bash
    git clone <your-repo-url>
-   cd mindmap
+   cd LogicTreeAI
    ```
 
 2. **Create a virtual environment**:
