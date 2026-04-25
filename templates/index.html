@@ -166,11 +166,11 @@
 <span class="material-symbols-outlined">schema</span>
 <span class="text-[10px] uppercase tracking-wider mt-1">Canvas</span>
 </button>
-<button id="history-sidebar-btn" class="w-full py-3 flex flex-col items-center gap-1 text-[#40485d] hover:text-[#85adff] transition-colors duration-300 scale-95 active:scale-90 transition-transform" onclick="document.getElementById('history-panel').classList.toggle('hidden')">
+<button id="history-sidebar-btn" class="w-full py-3 flex flex-col items-center gap-1 text-[#40485d] hover:text-[#85adff] transition-colors duration-300 scale-95 active:scale-90 transition-transform" onclick="toggleHistoryPanel()">
 <span class="material-symbols-outlined">history</span>
 <span class="text-[10px] uppercase tracking-wider mt-1">History</span>
 </button>
-<button id="multi-agent-sidebar-btn" class="w-full py-3 flex flex-col items-center gap-1 text-[#40485d] hover:text-[#85adff] transition-colors duration-300 scale-95 active:scale-90 transition-transform" onclick="document.getElementById('multi-agent-panel').classList.toggle('hidden')">
+<button id="multi-agent-sidebar-btn" class="w-full py-3 flex flex-col items-center gap-1 text-[#40485d] hover:text-[#85adff] transition-colors duration-300 scale-95 active:scale-90 transition-transform" onclick="toggleMultiAgentPanel()">
 <span class="material-symbols-outlined">groups</span>
 <span class="text-[10px] uppercase tracking-wider mt-1">Multi-AI</span>
 </button>
@@ -221,11 +221,6 @@
 </nav>
 </div>
 <div class="flex items-center gap-6">
-<!-- Search on right -->
-<div class="relative hidden md:block">
-<span class="material-symbols-outlined absolute left-3 top-1/2 -translate-y-1/2 text-outline text-sm">search</span>
-<input class="bg-surface-container-highest border-none rounded-full pl-9 pr-4 py-1.5 text-xs text-on-surface focus:ring-1 focus:ring-secondary/50 placeholder-on-surface-variant w-48" placeholder="Search logic..." type="text"/>
-</div>
 <div class="flex items-center gap-3">
 <button id="toggle-view-btn" class="bg-surface-container-highest border border-secondary/30 text-secondary px-4 py-1.5 rounded-full hover:bg-surface-bright transition-colors">Toggle View</button>
 <button class="action-gradient text-on-primary-fixed px-5 py-1.5 rounded-full hover:brightness-110 transition-all font-bold">Deploy Node</button>

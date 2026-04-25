@@ -779,6 +779,40 @@ function showLoading(show) {
     elements.loadingOverlay.style.display = show ? 'flex' : 'none';
 }
 
+// ==================== Panel Toggle Functions ====================
+
+function toggleHistoryPanel() {
+    const historyPanel = document.getElementById('history-panel');
+    const multiAgentPanel = document.getElementById('multi-agent-panel');
+
+    if (historyPanel && multiAgentPanel) {
+        // If history panel is hidden, show it and hide multi-agent
+        if (historyPanel.classList.contains('hidden')) {
+            historyPanel.classList.remove('hidden');
+            multiAgentPanel.classList.add('hidden');
+        } else {
+            // If history panel is visible, just hide it
+            historyPanel.classList.add('hidden');
+        }
+    }
+}
+
+function toggleMultiAgentPanel() {
+    const historyPanel = document.getElementById('history-panel');
+    const multiAgentPanel = document.getElementById('multi-agent-panel');
+
+    if (historyPanel && multiAgentPanel) {
+        // If multi-agent panel is hidden, show it and hide history
+        if (multiAgentPanel.classList.contains('hidden')) {
+            multiAgentPanel.classList.remove('hidden');
+            historyPanel.classList.add('hidden');
+        } else {
+            // If multi-agent panel is visible, just hide it
+            multiAgentPanel.classList.add('hidden');
+        }
+    }
+}
+
 // ==================== Navigation Bar Selection ====================
 
 function setActiveNavLink(linkId) {
