@@ -468,6 +468,14 @@
                 </p>
             </div>
 
+            <div class="flex flex-col" id="ma-moderator-section">
+                <label class="text-[11px] font-headline text-on-surface-variant tracking-widest uppercase font-medium mb-2 pl-1">Moderator (optional, sequential only)</label>
+                <select id="ma-moderator" class="w-full bg-surface-container-low border-0 border-b-2 border-outline-variant focus:border-tertiary focus:ring-0 text-on-surface pl-4 pr-4 py-3 text-sm transition-all outline-none rounded-t-lg shadow-inner">
+                    <option value="">None — round-robin</option>
+                </select>
+                <p class="text-xs text-on-surface-variant mt-2 pl-1">When set, this model decides who speaks next based on the discussion. Falls back to round-robin if it fails.</p>
+            </div>
+
             <div class="flex flex-col">
                 <label class="text-[11px] font-headline text-on-surface-variant tracking-widest uppercase font-medium mb-2 pl-1">Max Turns</label>
                 <input id="ma-rounds" type="number" min="1" max="30" value="9" class="w-full bg-surface-container-low border-0 border-b-2 border-outline-variant focus:border-tertiary focus:ring-0 text-on-surface pl-4 pr-4 py-3 text-sm transition-all outline-none rounded-t-lg shadow-inner"/>
@@ -499,9 +507,12 @@
             </div>
             <button class="absolute top-4 right-4 text-2xl text-on-surface-variant hover:text-on-surface" id="close-multi-agent-view">&times;</button>
         </div>
-        <div class="px-8 py-6 bg-surface-container-low border-b border-outline-variant/10">
-            <div class="text-[11px] font-headline text-on-surface-variant tracking-widest uppercase font-medium mb-2">Problem Statement</div>
-            <p id="ma-view-problem" class="text-sm text-on-surface leading-relaxed"></p>
+        <div id="ma-view-problem-section" class="px-8 py-4 bg-surface-container-low border-b border-outline-variant/10">
+            <button id="ma-problem-toggle" type="button" class="w-full flex items-center justify-between gap-3 text-left group" aria-expanded="true" aria-controls="ma-view-problem">
+                <span class="text-[11px] font-headline text-on-surface-variant tracking-widest uppercase font-medium">Problem Statement</span>
+                <span id="ma-problem-toggle-icon" class="material-symbols-outlined text-[18px] text-on-surface-variant group-hover:text-on-surface transition-transform duration-200">expand_less</span>
+            </button>
+            <p id="ma-view-problem" class="text-sm text-on-surface leading-relaxed mt-2"></p>
         </div>
         <div id="ma-view-discussion" class="flex-1 overflow-y-auto px-8 py-6 space-y-6">
             <div class="text-sm text-on-surface-variant">Loading discussion...</div>

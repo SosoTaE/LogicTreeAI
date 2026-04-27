@@ -110,7 +110,30 @@ def session_to_docx(session):
         doc.add_paragraph('(No turns recorded.)')
     else:
         for turn in turns:
-            is_user = (turn.model_name or '').lower() == 'user'
+            name_lower = (turn.model_name or '').lower()
+            is_user = name_lower == 'user'
+            is_moderator = name_lower == 'moderator'
+
+            if is_moderator:
+                # Render moderator decisions as a slim italic line
+                # rather than a full heading + body block — they're
+                # meta-events, not part of the substantive discussion.
+                chosen = (turn.model_role or '').lstrip('->').strip()
+                summary = f'Moderator -> {chosen}' if chosen else 'Moderator'
+                mod_para = doc.add_paragraph()
+                mod_run = mod_para.add_run(summary)
+                mod_run.bold = True
+                mod_run.italic = True
+                mod_run.font.size = Pt(10)
+                mod_run.font.color.rgb = RGBColor(0x55, 0x55, 0x88)
+                if turn.content and turn.content.strip():
+                    reason = doc.add_paragraph()
+                    reason_run = reason.add_run(turn.content.strip())
+                    reason_run.italic = True
+                    reason_run.font.size = Pt(9.5)
+                    reason_run.font.color.rgb = RGBColor(0x66, 0x66, 0x77)
+                continue
+
             label = 'Human (user)' if is_user else (turn.model_name or 'unknown')
             heading_bits = [f'Turn {turn.turn_number}', label]
             if turn.model_role and not is_user:
@@ -197,6 +220,12 @@ def _pdf_styles():
             fontName='Helvetica-Oblique', fontSize=10,
             textColor=HexColor('#b00020'), leading=14,
         ),
+        'Moderator': ParagraphStyle(
+            'DiscussModerator', parent=base['BodyText'],
+            fontName='Helvetica-Oblique', fontSize=10,
+            textColor=HexColor('#555588'), leading=13,
+            spaceBefore=4, spaceAfter=2,
+        ),
     }
     return styles
 
@@ -247,7 +276,24 @@ def session_to_pdf(session):
         story.append(Paragraph('(No turns recorded.)', styles['Body']))
     else:
         for turn in turns:
-            is_user = (turn.model_name or '').lower() == 'user'
+            name_lower = (turn.model_name or '').lower()
+            is_user = name_lower == 'user'
+            is_moderator = name_lower == 'moderator'
+
+            if is_moderator:
+                chosen = (turn.model_role or '').lstrip('->').strip()
+                header = f'Moderator -> {chosen}' if chosen else 'Moderator'
+                story.append(Paragraph(
+                    f'<b>{_escape_pdf(header)}</b>',
+                    styles['Moderator'],
+                ))
+                if turn.content and turn.content.strip():
+                    story.append(Paragraph(
+                        _escape_pdf(turn.content.strip()).replace('\n', '<br/>'),
+                        styles['Moderator'],
+                    ))
+                continue
+
             label = 'Human (user)' if is_user else (turn.model_name or 'unknown')
             heading_bits = [f'Turn {turn.turn_number}', label]
             if turn.model_role and not is_user:

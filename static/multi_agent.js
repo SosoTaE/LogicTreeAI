@@ -72,10 +72,30 @@ function openMultiAgentModal() {
     document.getElementById('ma-problem').value = '';
     document.getElementById('ma-rounds').value = '9';
     document.getElementById('ma-mode').value = 'sequential';
+    const moderatorSelect = document.getElementById('ma-moderator');
+    if (moderatorSelect) moderatorSelect.value = '';
     updateModeDescription();
+    updateModeratorAvailability();
     document.getElementById('ma-error').classList.add('hidden');
 
     modal.classList.add('active');
+}
+
+// The moderator picker only makes sense in sequential mode (parallel
+// runs every model each round, so there's no "next speaker" to choose).
+function updateModeratorAvailability() {
+    const mode = document.getElementById('ma-mode').value;
+    const select = document.getElementById('ma-moderator');
+    const section = document.getElementById('ma-moderator-section');
+    if (!select || !section) return;
+    if (mode === 'parallel') {
+        select.value = '';
+        select.disabled = true;
+        section.classList.add('opacity-50');
+    } else {
+        select.disabled = false;
+        section.classList.remove('opacity-50');
+    }
 }
 
 // Update mode description
@@ -168,9 +188,31 @@ async function loadModelsForMultiAgent() {
         });
         renderRolesEditor();
 
+        // Populate the moderator dropdown from the same flat list, plus
+        // a "None" option for the default round-robin behavior.
+        populateModeratorOptions(allModels);
+
     } catch (error) {
         console.error('Error loading models:', error);
         container.innerHTML = '<div class="col-span-2 text-sm text-error">Error loading models</div>';
+    }
+}
+
+// Fill the moderator <select> with the same models the user can pick
+// as participants. Preserves the current selection across reloads.
+function populateModeratorOptions(allModels) {
+    const select = document.getElementById('ma-moderator');
+    if (!select) return;
+    const previous = select.value;
+    select.innerHTML = '<option value="">None — round-robin</option>';
+    allModels.forEach(model => {
+        const opt = document.createElement('option');
+        opt.value = model.name;
+        opt.textContent = model.name;
+        select.appendChild(opt);
+    });
+    if (previous && allModels.some(m => m.name === previous)) {
+        select.value = previous;
     }
 }
 
@@ -230,6 +272,7 @@ async function startMultiAgentDiscussion(event) {
     const problem = document.getElementById('ma-problem').value.trim();
     const maxRounds = parseInt(document.getElementById('ma-rounds').value);
     const conversationMode = document.getElementById('ma-mode').value;
+    const moderatorModel = (document.getElementById('ma-moderator')?.value || '').trim();
     const errorEl = document.getElementById('ma-error');
 
     // Get selected models
@@ -273,6 +316,8 @@ async function startMultiAgentDiscussion(event) {
                 model_roles: collectModelRoles(),
                 max_rounds: maxRounds,
                 conversation_mode: conversationMode,
+                // Only send moderator if sequential — backend rejects it otherwise.
+                moderator_model: conversationMode === 'sequential' ? (moderatorModel || null) : null,
                 auto_start: false
             })
         });
@@ -318,8 +363,11 @@ async function viewMultiAgentSession(sessionId) {
         // Update modal
         document.getElementById('ma-view-title').textContent = session.title;
         const modeText = session.conversation_mode === 'sequential' ? 'Sequential' : 'Parallel';
+        const moderatorText = session.moderator_model
+            ? ` • Moderator: ${session.moderator_model}`
+            : '';
         document.getElementById('ma-view-status').textContent =
-            `${modeText} • ${session.status} • Turn ${session.current_round}/${session.max_rounds}`;
+            `${modeText} • ${session.status} • Turn ${session.current_round}/${session.max_rounds}${moderatorText}`;
         document.getElementById('ma-view-problem').textContent = session.initial_problem;
 
         // Render discussion
@@ -330,12 +378,14 @@ async function viewMultiAgentSession(sessionId) {
         const stopBtn = document.getElementById('ma-stop-btn');
 
         // "Rounds used" on the backend tracks AI turns only (human turns
-        // don't burn the budget), but the session object exposes
-        // current_round as a total turn counter. Compute AI-turn count
-        // here so the UI matches backend completion semantics.
-        const aiTurnCount = (session.turns || []).filter(
-            t => (t.model_name || '').toLowerCase() !== 'user' && !t.error
-        ).length;
+        // and moderator decisions don't burn the budget), but the
+        // session object exposes current_round as a total turn counter.
+        // Compute AI-turn count here so the UI matches backend
+        // completion semantics.
+        const aiTurnCount = (session.turns || []).filter(t => {
+            const name = (t.model_name || '').toLowerCase();
+            return name !== 'user' && name !== 'moderator' && !t.error;
+        }).length;
         const canContinue = session.status === 'active' && aiTurnCount < session.max_rounds;
 
         if (canContinue) {
@@ -359,6 +409,18 @@ async function viewMultiAgentSession(sessionId) {
 
         // Populate synthesis model dropdown
         populateSynthesisModelSelector();
+
+        // Reset Problem Statement to expanded for each session view so
+        // a previously collapsed state from another session doesn't
+        // hide the new problem.
+        const problemBtn = document.getElementById('ma-problem-toggle');
+        const problemBody = document.getElementById('ma-view-problem');
+        const problemIcon = document.getElementById('ma-problem-toggle-icon');
+        if (problemBtn && problemBody && problemIcon) {
+            problemBtn.setAttribute('aria-expanded', 'true');
+            problemBody.classList.remove('hidden');
+            problemIcon.textContent = 'expand_less';
+        }
 
         // Show modal
         document.getElementById('multi-agent-view-modal').classList.add('active');
@@ -386,13 +448,42 @@ function renderMultiAgentDiscussion(session) {
     if (session.conversation_mode === 'sequential') {
         // Sequential mode: show turns in chronological order
         let turnsHtml = session.turns.map((turn) => {
-            const isUser = (turn.model_name || '').toLowerCase() === 'user';
+            const nameLower = (turn.model_name || '').toLowerCase();
+            const isUser = nameLower === 'user';
+            const isModerator = nameLower === 'moderator';
 
             if (turn.error) {
                 return `
                     <div class="border border-error/20 rounded-lg p-4">
                         <div class="text-xs font-mono text-error mb-1">Turn ${turn.turn_number}: ${escapeHtml(turn.model_name)}</div>
                         <div class="text-sm text-error opacity-80">Error: ${escapeHtml(turn.error)}</div>
+                    </div>
+                `;
+            }
+
+            if (isModerator) {
+                // Slim banner showing who the moderator picked. The
+                // model_role field carries "-> <chosen_model>" so the
+                // user can see the decision at a glance; reasoning is
+                // tucked inside <details> to avoid cluttering the
+                // discussion view.
+                const chosen = (turn.model_role || '').replace(/^->\s*/, '');
+                const moderatorBy = session.moderator_model
+                    ? ` (${escapeHtml(session.moderator_model)})`
+                    : '';
+                const reasoning = (turn.content || '').trim();
+                return `
+                    <div class="border border-secondary/30 bg-secondary/5 rounded-lg px-4 py-2">
+                        <details ${reasoning ? '' : 'open'} class="group">
+                            <summary class="flex items-center gap-2 cursor-pointer list-none select-none">
+                                <span class="material-symbols-outlined text-[14px] text-secondary">gavel</span>
+                                <span class="text-xs font-mono text-secondary font-bold">Moderator${moderatorBy}</span>
+                                <span class="text-xs text-on-surface-variant">picked</span>
+                                <span class="text-xs font-mono text-tertiary">${escapeHtml(chosen) || '—'}</span>
+                                ${reasoning ? `<span class="ml-auto text-[10px] text-on-surface-variant group-open:hidden">show reasoning ▾</span><span class="ml-auto text-[10px] text-on-surface-variant hidden group-open:inline">hide reasoning ▴</span>` : ''}
+                            </summary>
+                            ${reasoning ? `<div class="mt-2 pl-6 text-xs text-on-surface-variant leading-relaxed prose prose-invert max-w-none">${marked.parse(reasoning)}</div>` : ''}
+                        </details>
                     </div>
                 `;
             }
@@ -744,6 +835,26 @@ async function deleteMultiAgentSession() {
     }
 }
 
+// Toggle the Problem Statement section so the user can free up
+// vertical space for the discussion. Stores nothing — defaults to
+// expanded each time the modal opens.
+function toggleProblemStatement() {
+    const btn = document.getElementById('ma-problem-toggle');
+    const body = document.getElementById('ma-view-problem');
+    const icon = document.getElementById('ma-problem-toggle-icon');
+    if (!btn || !body || !icon) return;
+    const isExpanded = btn.getAttribute('aria-expanded') !== 'false';
+    const next = !isExpanded;
+    btn.setAttribute('aria-expanded', String(next));
+    if (next) {
+        body.classList.remove('hidden');
+        icon.textContent = 'expand_less';
+    } else {
+        body.classList.add('hidden');
+        icon.textContent = 'expand_more';
+    }
+}
+
 // Helper function to escape HTML
 function escapeHtml(text) {
     const div = document.createElement('div');
@@ -764,7 +875,10 @@ document.addEventListener('DOMContentLoaded', function() {
 
     const modeSelect = document.getElementById('ma-mode');
     if (modeSelect) {
-        modeSelect.addEventListener('change', updateModeDescription);
+        modeSelect.addEventListener('change', () => {
+            updateModeDescription();
+            updateModeratorAvailability();
+        });
     }
 
     const closeButtons = ['close-multi-agent', 'close-multi-agent-2'];
@@ -780,6 +894,11 @@ document.addEventListener('DOMContentLoaded', function() {
         closeViewBtn.addEventListener('click', () => {
             document.getElementById('multi-agent-view-modal').classList.remove('active');
         });
+    }
+
+    const problemToggleBtn = document.getElementById('ma-problem-toggle');
+    if (problemToggleBtn) {
+        problemToggleBtn.addEventListener('click', toggleProblemStatement);
     }
 
     const startBtn = document.getElementById('start-multi-agent-btn');

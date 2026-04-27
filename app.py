@@ -39,9 +39,41 @@ init_db()
 logger.info("Database initialized at %s", Config.SQLALCHEMY_DATABASE_URI)
 
 from llm_service import llm_service
-from multi_agent_service import MultiAgentService
+from multi_agent_service import MultiAgentService, MODERATOR_TURN_NAME
 
 multi_agent_service = MultiAgentService(llm_service)
+
+
+def _is_ai_participant_turn(turn):
+    """A turn that counts toward max_rounds and the rotation cursor:
+    must be a participant model's reply (not the human, not a moderator
+    decision) and not an error."""
+    name = (turn.model_name or '').lower()
+    if name == 'user':
+        return False
+    if name == MODERATOR_TURN_NAME:
+        return False
+    if turn.error:
+        return False
+    return True
+
+
+def _ai_turn_count(session_obj):
+    return sum(1 for t in session_obj.turns if _is_ai_participant_turn(t))
+
+
+def _discussion_history_for_llm(session_obj):
+    """Turns to feed back into participant prompts and synthesis. Drops
+    error turns; moderator turns are also dropped so participants never
+    see meta-reasoning."""
+    out = []
+    for turn in session_obj.turns:
+        if turn.error:
+            continue
+        if (turn.model_name or '').lower() == MODERATOR_TURN_NAME:
+            continue
+        out.append(turn.to_dict())
+    return out
 
 
 @app.before_request
@@ -820,6 +852,7 @@ def create_multi_agent_session():
     model_roles = data.get('model_roles')  # Optional dict
     max_rounds = data.get('max_rounds', 3)
     conversation_mode = data.get('conversation_mode', 'sequential')  # sequential or parallel
+    moderator_model = (data.get('moderator_model') or '').strip() or None
     auto_start = data.get('auto_start', True)
 
     if not initial_problem:
@@ -830,6 +863,13 @@ def create_multi_agent_session():
         return jsonify({'status': 'error', 'message': 'max_rounds must be between 1 and 30'}), 400
     if conversation_mode not in ['sequential', 'parallel']:
         return jsonify({'status': 'error', 'message': 'conversation_mode must be sequential or parallel'}), 400
+    # Moderator only meaningful for sequential mode (parallel runs every
+    # model each round, so there's no "next speaker" to choose).
+    if moderator_model and conversation_mode != 'sequential':
+        return jsonify({
+            'status': 'error',
+            'message': 'moderator_model is only supported in sequential mode',
+        }), 400
 
     db = get_session()
     try:
@@ -842,6 +882,7 @@ def create_multi_agent_session():
             model_roles=model_roles,
             max_rounds=max_rounds,
             conversation_mode=conversation_mode,
+            moderator_model=moderator_model,
             status='active',
         )
         db.add(session_obj)
@@ -865,7 +906,20 @@ def create_multi_agent_session():
                     total_turns=1,  # Just first turn for auto_start
                     user_keys=user_keys,
                     model_roles=model_roles,
+                    moderator_model=moderator_model,
                 )
+
+                # Persist moderator decisions before AI replies so they
+                # sort first under the same turn_number.
+                for mod_turn in result.get('moderator_turns', []):
+                    db.add(MultiAgentTurn(
+                        session_id=session_obj.id,
+                        turn_number=mod_turn['turn_number'],
+                        model_name=MODERATOR_TURN_NAME,
+                        model_role=f"-> {mod_turn['next_model']}",
+                        content=mod_turn.get('reasoning') or '',
+                        duration=mod_turn.get('duration'),
+                    ))
 
                 # Save turns
                 for turn in result['turns']:
@@ -891,6 +945,9 @@ def create_multi_agent_session():
                     db.add(turn_obj)
 
                 session_obj.current_round = 1
+                if result.get('stopped_early'):
+                    session_obj.status = 'completed'
+                    session_obj.completed_at = datetime.utcnow()
 
             else:  # parallel mode
                 round_result = multi_agent_service.run_discussion_round(
@@ -978,12 +1035,9 @@ def continue_multi_agent_session(session_id):
             return jsonify({'status': 'error', 'message': f'Session is {session_obj.status}'}), 400
 
         # AI-turn count drives both the completion check and the
-        # round-robin rotation, so human turns don't burn the budget or
-        # shift which model speaks next.
-        ai_turn_count = sum(
-            1 for t in session_obj.turns
-            if t.model_name != 'user' and not t.error
-        )
+        # rotation cursor, so human turns and moderator decisions
+        # don't burn the budget or shift which model speaks next.
+        ai_turn_count = _ai_turn_count(session_obj)
         if ai_turn_count >= session_obj.max_rounds:
             session_obj.status = 'completed'
             session_obj.completed_at = datetime.utcnow()
@@ -994,19 +1048,56 @@ def continue_multi_agent_session(session_id):
                 'session': session_obj.to_dict(include_turns=True),
             }), 400
 
-        # Get discussion history (includes user turns; errors excluded)
-        discussion_history = [turn.to_dict() for turn in session_obj.turns if not turn.error]
+        # Discussion history fed to the LLM excludes moderator turns
+        # (meta) and error turns. User turns are kept so the next
+        # speaker can address what the human said.
+        discussion_history = _discussion_history_for_llm(session_obj)
 
         # Run the next turn/round
         next_turn_num = session_obj.current_round + 1
         user_keys = get_user_api_keys(db, user.id)
+        moderator_should_end = False
 
         if session_obj.conversation_mode == 'sequential':
-            # Sequential: rotate across AI turns only, so the cursor
-            # doesn't jump when the human chimes in.
-            model_index = ai_turn_count % len(session_obj.participating_models)
-            current_model = session_obj.participating_models[model_index]
+            # Pick the next speaker (moderator if configured, else
+            # round-robin keyed on ai_turn_count).
+            decision = multi_agent_service.pick_next_speaker(
+                initial_problem=session_obj.initial_problem,
+                conversation_history=discussion_history,
+                participating_models=session_obj.participating_models,
+                model_roles=session_obj.model_roles,
+                ai_turn_count=ai_turn_count,
+                moderator_model=session_obj.moderator_model,
+                user_keys=user_keys,
+            )
+            current_model = decision['next_model']
             role = session_obj.model_roles.get(current_model) if session_obj.model_roles else None
+            moderator_should_end = bool(decision.get('moderator_should_end'))
+
+            # Persist moderator decision (if any) before the AI reply
+            # so it sorts first under the same turn_number.
+            moderator_payload = None
+            if decision['moderator_used']:
+                mod_turn = MultiAgentTurn(
+                    session_id=session_obj.id,
+                    turn_number=next_turn_num,
+                    model_name=MODERATOR_TURN_NAME,
+                    model_role=f"-> {current_model}",
+                    content=decision.get('moderator_reasoning') or '',
+                    duration=decision.get('moderator_duration'),
+                )
+                db.add(mod_turn)
+                # Flush so the moderator row gets an earlier created_at
+                # than the AI turn we're about to add.
+                db.flush()
+                moderator_payload = {
+                    'turn_number': next_turn_num,
+                    'moderator_model': decision.get('moderator_model'),
+                    'next_model': current_model,
+                    'reasoning': decision.get('moderator_reasoning') or '',
+                    'should_end': moderator_should_end,
+                    'duration': decision.get('moderator_duration'),
+                }
 
             # Create conversation prompt
             prompt = multi_agent_service.create_conversation_prompt(
@@ -1047,6 +1138,7 @@ def continue_multi_agent_session(session_id):
                         'role': role,
                         'duration': duration
                     }],
+                    'moderator': moderator_payload,
                     'errors': []
                 }
 
@@ -1062,6 +1154,7 @@ def continue_multi_agent_session(session_id):
 
                 result = {
                     'turns': [],
+                    'moderator': moderator_payload,
                     'errors': [{
                         'turn_number': next_turn_num,
                         'model_name': current_model,
@@ -1109,12 +1202,10 @@ def continue_multi_agent_session(session_id):
 
         # Completion is based on AI turns produced, not total turns.
         # Recount so sequential (+1 AI turn) and parallel (+N AI turns)
-        # both update correctly.
-        new_ai_turn_count = sum(
-            1 for t in session_obj.turns
-            if t.model_name != 'user' and not t.error
-        )
-        if new_ai_turn_count >= session_obj.max_rounds:
+        # both update correctly. Moderator's should_end is honored after
+        # the chosen speaker has already replied.
+        new_ai_turn_count = _ai_turn_count(session_obj)
+        if new_ai_turn_count >= session_obj.max_rounds or moderator_should_end:
             session_obj.status = 'completed'
             session_obj.completed_at = datetime.utcnow()
 
@@ -1245,8 +1336,8 @@ def synthesize_multi_agent_session(session_id):
         if not session_obj:
             return jsonify({'status': 'error', 'message': 'Session not found'}), 404
 
-        # Get discussion history (exclude errors)
-        discussion_history = [turn.to_dict() for turn in session_obj.turns if not turn.error]
+        # Get discussion history (exclude errors and moderator decisions)
+        discussion_history = _discussion_history_for_llm(session_obj)
 
         if not discussion_history:
             return jsonify({'status': 'error', 'message': 'No discussion to synthesize'}), 400

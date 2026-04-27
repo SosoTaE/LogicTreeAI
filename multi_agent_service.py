@@ -5,12 +5,19 @@ This service enables collaborative problem-solving where multiple AI models
 discuss and build on each other's responses.
 """
 
+import json
 import logging
+import re
 from typing import List, Dict, Any, Optional
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 
 logger = logging.getLogger(__name__)
+
+# A turn whose model_name matches this is a moderator decision, not an
+# AI participant's response. Excluded from rotation, AI-turn count,
+# discussion history fed to participants, and synthesis input.
+MODERATOR_TURN_NAME = 'moderator'
 
 
 class MultiAgentService:
@@ -30,6 +37,259 @@ class MultiAgentService:
             llm_service: LLMService instance for making LLM calls
         """
         self.llm_service = llm_service
+
+    # ------------------------- Moderator -------------------------
+
+    def _build_moderator_prompt(
+        self,
+        initial_problem: str,
+        conversation_history: List[Dict[str, Any]],
+        participating_models: List[str],
+        model_roles: Optional[Dict[str, str]],
+    ) -> str:
+        """Compose the single-turn user prompt that asks a moderator LLM
+        to pick the next speaker. Intentionally request strict JSON so
+        we can parse the response without invoking a tool API (which
+        would couple us to one provider's schema)."""
+        roles = model_roles or {}
+        participants_lines = []
+        for m in participating_models:
+            role = roles.get(m)
+            if role:
+                participants_lines.append(f"- {m} (role: {role})")
+            else:
+                participants_lines.append(f"- {m}")
+
+        history_lines = []
+        # Exclude prior moderator decisions from the visible context so
+        # the moderator focuses on the substantive discussion, not its
+        # own past picks.
+        ai_history = [
+            t for t in conversation_history
+            if (t.get('model_name') or '').lower() != MODERATOR_TURN_NAME
+        ]
+        if ai_history:
+            for turn in ai_history:
+                model_name = turn.get('model_name', 'Unknown')
+                content = turn.get('content', '')
+                if model_name == 'user':
+                    history_lines.append(f"\nHuman (the user):\n{content}\n")
+                else:
+                    role = turn.get('model_role') or turn.get('role')
+                    label = f"{model_name}" + (f" ({role})" if role else "")
+                    history_lines.append(f"\n{label}:\n{content}\n")
+
+        speaker_counts = {m: 0 for m in participating_models}
+        last_speaker = None
+        for turn in ai_history:
+            name = turn.get('model_name')
+            if name in speaker_counts:
+                speaker_counts[name] += 1
+                last_speaker = name
+
+        speaker_count_lines = [
+            f"- {m}: {speaker_counts[m]} turn(s) so far"
+            for m in participating_models
+        ]
+
+        parts = [
+            "You are the MODERATOR of a multi-agent discussion. Your only "
+            "job is to decide which participant speaks next and, if "
+            "applicable, whether the discussion should end now.",
+            "\nOriginal problem:\n" + initial_problem,
+            "\nParticipants (you must pick exactly one of these names):\n"
+            + "\n".join(participants_lines),
+            "\nTurns so far per participant:\n"
+            + "\n".join(speaker_count_lines),
+        ]
+        if last_speaker:
+            parts.append(f"\nMost recent speaker: {last_speaker}")
+        if history_lines:
+            parts.append("\n--- Discussion so far ---")
+            parts.extend(history_lines)
+            parts.append("--- End of discussion ---")
+        else:
+            parts.append(
+                "\nThe discussion has not started yet. Pick whichever "
+                "participant should open the conversation."
+            )
+
+        parts.append(
+            "\nGuidelines:\n"
+            "- Pick the participant whose role/expertise best fits the "
+            "current state of the discussion.\n"
+            "- Avoid letting one participant dominate unless their "
+            "expertise is clearly needed right now.\n"
+            "- If the human just spoke, pick the participant best suited "
+            "to address what they said.\n"
+            "- Set should_end=true ONLY if the discussion has clearly "
+            "reached a natural conclusion or is going in circles. "
+            "Otherwise should_end=false."
+        )
+        parts.append(
+            "\nReply with ONLY a single JSON object on one line, no "
+            "markdown fences, no commentary before or after:\n"
+            '{"next_model": "<exact participant name>", "reasoning": '
+            '"<one or two short sentences>", "should_end": <true|false>}'
+        )
+        return "\n".join(parts)
+
+    def _parse_moderator_response(
+        self,
+        raw: str,
+        participating_models: List[str],
+    ) -> Dict[str, Any]:
+        """Pull the first JSON object out of the moderator's response and
+        validate it. Returns a normalized dict; raises ValueError if the
+        response cannot be turned into a valid decision."""
+        if not raw or not raw.strip():
+            raise ValueError("empty moderator response")
+
+        text = raw.strip()
+        # Some providers wrap JSON in ```json ... ``` even when told not
+        # to. Strip code fences before parsing.
+        fence = re.match(r"^```(?:json)?\s*(.*?)\s*```$", text, re.DOTALL)
+        if fence:
+            text = fence.group(1).strip()
+
+        try:
+            data = json.loads(text)
+        except json.JSONDecodeError:
+            # Fallback: pull the first {...} block out of free-form text.
+            match = re.search(r"\{.*\}", text, re.DOTALL)
+            if not match:
+                raise ValueError("no JSON object in moderator response")
+            data = json.loads(match.group(0))
+
+        if not isinstance(data, dict):
+            raise ValueError("moderator JSON was not an object")
+
+        chosen = data.get("next_model")
+        if not isinstance(chosen, str) or not chosen.strip():
+            raise ValueError("missing next_model")
+        chosen = chosen.strip()
+
+        # Tolerate case differences and accidental quoting.
+        if chosen not in participating_models:
+            lower_map = {m.lower(): m for m in participating_models}
+            normalized = lower_map.get(chosen.lower())
+            if not normalized:
+                raise ValueError(
+                    f"next_model {chosen!r} is not one of the participants"
+                )
+            chosen = normalized
+
+        reasoning = data.get("reasoning") or ""
+        if not isinstance(reasoning, str):
+            reasoning = str(reasoning)
+
+        should_end = bool(data.get("should_end", False))
+
+        return {
+            "next_model": chosen,
+            "reasoning": reasoning.strip(),
+            "should_end": should_end,
+        }
+
+    def pick_next_speaker(
+        self,
+        initial_problem: str,
+        conversation_history: List[Dict[str, Any]],
+        participating_models: List[str],
+        model_roles: Optional[Dict[str, str]],
+        ai_turn_count: int,
+        moderator_model: Optional[str],
+        user_keys: Dict[str, str],
+    ) -> Dict[str, Any]:
+        """
+        Decide which participant speaks next.
+
+        When `moderator_model` is set, asks that LLM to pick. On any
+        failure (LLM error, bad JSON, unknown model), falls back to
+        round-robin keyed on `ai_turn_count` so the discussion never
+        stalls because the moderator misbehaved.
+
+        Returns dict with:
+          - next_model: str (always a participant)
+          - moderator_used: bool
+          - moderator_model: str or None (which model moderated)
+          - moderator_reasoning: str or None
+          - moderator_should_end: bool
+          - moderator_error: str or None (only set on fallback)
+          - moderator_duration: float or None
+        """
+        if not participating_models:
+            raise ValueError("no participating models")
+
+        def _round_robin(error_reason: Optional[str] = None) -> Dict[str, Any]:
+            idx = ai_turn_count % len(participating_models)
+            return {
+                "next_model": participating_models[idx],
+                "moderator_used": False,
+                "moderator_model": moderator_model,
+                "moderator_reasoning": None,
+                "moderator_should_end": False,
+                "moderator_error": error_reason,
+                "moderator_duration": None,
+            }
+
+        if not moderator_model:
+            return _round_robin()
+
+        prompt = self._build_moderator_prompt(
+            initial_problem=initial_problem,
+            conversation_history=conversation_history,
+            participating_models=participating_models,
+            model_roles=model_roles,
+        )
+
+        started = datetime.now()
+        try:
+            raw = self.llm_service.call_llm(
+                messages=[{"role": "user", "content": prompt}],
+                target_model=moderator_model,
+                user_keys=user_keys,
+            )
+        except Exception as e:
+            logger.warning(
+                "Moderator LLM call failed (%s), falling back to round-robin",
+                e,
+            )
+            return _round_robin(error_reason=f"moderator call failed: {e}")
+
+        duration = (datetime.now() - started).total_seconds()
+
+        try:
+            decision = self._parse_moderator_response(
+                raw=raw,
+                participating_models=participating_models,
+            )
+        except (ValueError, json.JSONDecodeError) as e:
+            logger.warning(
+                "Moderator response invalid (%s), falling back to round-robin. "
+                "Raw=%r",
+                e, raw[:200] if isinstance(raw, str) else raw,
+            )
+            fallback = _round_robin(error_reason=f"moderator parse failed: {e}")
+            fallback["moderator_duration"] = duration
+            return fallback
+
+        logger.info(
+            "Moderator %s picked %s (should_end=%s) in %.2fs",
+            moderator_model, decision["next_model"],
+            decision["should_end"], duration,
+        )
+        return {
+            "next_model": decision["next_model"],
+            "moderator_used": True,
+            "moderator_model": moderator_model,
+            "moderator_reasoning": decision["reasoning"],
+            "moderator_should_end": decision["should_end"],
+            "moderator_error": None,
+            "moderator_duration": duration,
+        }
+
+    # ------------------------- Conversation -------------------------
 
     def create_conversation_prompt(
         self,
@@ -69,10 +329,16 @@ class MultiAgentService:
 
         prompt_parts.append(f"\nOriginal Problem:\n{initial_problem}\n")
 
-        # Add conversation history
-        if conversation_history:
+        # Add conversation history (drop moderator decisions — they're
+        # meta and shouldn't bleed into a participant's view of the
+        # discussion).
+        visible_history = [
+            t for t in conversation_history
+            if (t.get('model_name') or '').lower() != MODERATOR_TURN_NAME
+        ]
+        if visible_history:
             prompt_parts.append("\n--- Conversation So Far ---")
-            for turn in conversation_history:
+            for turn in visible_history:
                 model_name = turn.get('model_name', 'Unknown')
                 content = turn.get('content', '')
                 if model_name == 'user':
@@ -102,7 +368,8 @@ class MultiAgentService:
         participating_models: List[str],
         total_turns: int,
         user_keys: Dict[str, str],
-        model_roles: Optional[Dict[str, str]] = None
+        model_roles: Optional[Dict[str, str]] = None,
+        moderator_model: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Run a sequential conversation where models take turns responding to each other.
@@ -113,38 +380,68 @@ class MultiAgentService:
             total_turns: Total number of turns in the conversation
             user_keys: User's API keys
             model_roles: Optional role assignments
+            moderator_model: Optional LLM that picks the next speaker each
+                turn. When None, falls back to round-robin.
 
         Returns:
-            Complete conversation results
+            Dict with 'turns' (AI turns), 'moderator_turns' (decisions
+            keyed to the AI turn they preceded), and 'errors'.
         """
-        logger.info(f"Starting sequential conversation: {len(participating_models)} models, {total_turns} turns")
+        logger.info(
+            "Starting sequential conversation: %d models, %d turns, moderator=%s",
+            len(participating_models), total_turns, moderator_model or 'none',
+        )
 
         model_roles = model_roles or {}
         conversation_history = []
         all_turns = []
+        moderator_turns = []
         errors = []
+        ai_turn_count = 0
+        should_end_early = False
 
         for turn_num in range(1, total_turns + 1):
-            # Rotate through models
-            model_index = (turn_num - 1) % len(participating_models)
-            current_model = participating_models[model_index]
+            if should_end_early:
+                break
+
+            decision = self.pick_next_speaker(
+                initial_problem=initial_problem,
+                conversation_history=conversation_history,
+                participating_models=participating_models,
+                model_roles=model_roles,
+                ai_turn_count=ai_turn_count,
+                moderator_model=moderator_model,
+                user_keys=user_keys,
+            )
+            current_model = decision["next_model"]
             role = model_roles.get(current_model)
 
-            logger.info(f"Turn {turn_num}/{total_turns}: {current_model}")
+            if decision["moderator_used"]:
+                moderator_turns.append({
+                    "turn_number": turn_num,
+                    "moderator_model": decision["moderator_model"],
+                    "next_model": current_model,
+                    "reasoning": decision["moderator_reasoning"] or '',
+                    "should_end": decision["moderator_should_end"],
+                    "duration": decision.get("moderator_duration"),
+                    "timestamp": datetime.now().isoformat(),
+                })
+
+            logger.info(
+                "Turn %d/%d: %s (moderator=%s)",
+                turn_num, total_turns, current_model,
+                decision["moderator_used"],
+            )
 
             try:
-                # Create conversation prompt
                 prompt = self.create_conversation_prompt(
                     initial_problem=initial_problem,
                     conversation_history=conversation_history,
                     current_model=current_model,
                     role=role
                 )
-
-                # Format as message list
                 messages = [{"role": "user", "content": prompt}]
 
-                # Call the LLM
                 start_time = datetime.now()
                 response_content = self.llm_service.call_llm(
                     messages=messages,
@@ -164,6 +461,7 @@ class MultiAgentService:
 
                 all_turns.append(turn_data)
                 conversation_history.append(turn_data)
+                ai_turn_count += 1
 
                 logger.info(f"Turn {turn_num} completed: {current_model} ({duration:.2f}s)")
 
@@ -175,16 +473,24 @@ class MultiAgentService:
                     "error": str(e)
                 }
                 errors.append(error_data)
-                # Don't add to conversation_history if it failed
+
+            # Honor moderator's should_end *after* the chosen speaker has
+            # already replied — otherwise the user gets a moderator
+            # decision with no follow-up turn.
+            if decision.get("moderator_should_end"):
+                should_end_early = True
 
         return {
             "initial_problem": initial_problem,
             "participating_models": participating_models,
             "model_roles": model_roles,
+            "moderator_model": moderator_model,
             "total_turns": len(all_turns),
             "turns": all_turns,
+            "moderator_turns": moderator_turns,
             "errors": errors,
-            "conversation_type": "sequential"
+            "conversation_type": "sequential",
+            "stopped_early": should_end_early,
         }
 
     def create_discussion_prompt(
@@ -443,6 +749,10 @@ class MultiAgentService:
 
         for turn in discussion_history:
             model_name = turn.get('model_name', 'Unknown')
+            # Moderator decisions are not part of the substantive
+            # discussion; skip them in the synthesis prompt.
+            if (model_name or '').lower() == MODERATOR_TURN_NAME:
+                continue
             content = turn.get('content', '')
             round_num = turn.get('round_number', 0)
             prompt_parts.append(f"\n[Round {round_num}] {model_name}:\n{content}\n")

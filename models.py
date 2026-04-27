@@ -1,7 +1,7 @@
 from datetime import datetime
 from sqlalchemy import (
     create_engine, Column, Integer, String, Text, DateTime,
-    ForeignKey, UniqueConstraint, Float, JSON,
+    ForeignKey, UniqueConstraint, Float, JSON, inspect, text,
 )
 from sqlalchemy.orm import declarative_base, relationship, Session
 from werkzeug.security import generate_password_hash, check_password_hash
@@ -162,6 +162,7 @@ class MultiAgentSession(Base):
     max_rounds = Column(Integer, nullable=False, default=3)
     current_round = Column(Integer, nullable=False, default=0)
     conversation_mode = Column(String(20), nullable=False, default='sequential')  # sequential or parallel
+    moderator_model = Column(String(100), nullable=True)  # Optional LLM that picks the next speaker; null = round-robin
     status = Column(String(20), nullable=False, default='active')  # active, completed, stopped
     synthesis = Column(Text, nullable=True)  # Synthesized conclusion of the discussion
     synthesis_model = Column(String(100), nullable=True)  # Model used for synthesis
@@ -187,6 +188,7 @@ class MultiAgentSession(Base):
             'max_rounds': self.max_rounds,
             'current_round': self.current_round,
             'conversation_mode': self.conversation_mode,
+            'moderator_model': self.moderator_model,
             'status': self.status,
             'synthesis': self.synthesis,
             'synthesis_model': self.synthesis_model,
@@ -253,6 +255,31 @@ engine = create_engine(Config.SQLALCHEMY_DATABASE_URI)
 def init_db():
     """Initialize the database and create all tables"""
     Base.metadata.create_all(engine)
+    _apply_lightweight_migrations()
+
+
+def _apply_lightweight_migrations():
+    """
+    SQLAlchemy create_all only creates missing tables, never altering
+    existing ones. Add columns introduced after a table was first
+    created so existing chat_app.db files don't need a manual reset.
+    Each entry is idempotent: it checks the live schema before issuing
+    ALTER TABLE.
+    """
+    additions = [
+        ('multi_agent_sessions', 'moderator_model', 'VARCHAR(100)'),
+    ]
+    inspector = inspect(engine)
+    with engine.begin() as conn:
+        for table_name, column_name, column_type in additions:
+            if not inspector.has_table(table_name):
+                continue
+            existing = {c['name'] for c in inspector.get_columns(table_name)}
+            if column_name in existing:
+                continue
+            conn.execute(text(
+                f'ALTER TABLE {table_name} ADD COLUMN {column_name} {column_type}'
+            ))
 
 
 def get_session():
